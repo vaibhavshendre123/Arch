@@ -89,6 +89,9 @@ const childEnv = {
   // factor buys nothing against a database that is discarded afterwards.
   BCRYPT_ROUNDS: '4',
   LOG_REQUESTS: 'false',
+  // The suite registers and signs in many accounts from one IP; the production limiter
+  // would throttle the harness rather than an attacker. Raising it here is explicit.
+  AUTH_RATE_MAX: '10000',
   // No outbound advisor calls from an integration run.
   GEMINI_API_KEY: '',
   MONGO_URI: mongoUri,

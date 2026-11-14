@@ -23,6 +23,15 @@ function toDuration(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 10 * 60 * 1000 ? parsed : fallback
 }
 
+/**
+ * Small positive integer counts. Separate from toDuration because a retry count is not a
+ * duration and must not be capped like one.
+ */
+function toCount(value, fallback, max = 100000) {
+  const parsed = Number.parseInt(value, 10)
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= max ? parsed : fallback
+}
+
 function toList(value) {
   if (!value) return []
   return value
@@ -67,6 +76,11 @@ export const env = Object.freeze({
   jwtSecret: process.env.JWT_SECRET || '',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   bcryptRounds: toPort(process.env.BCRYPT_ROUNDS, 10),
+  // Unauthenticated auth routes are the cheapest surface to brute-force. A fixed window
+  // per IP is deliberately generous: it blunts credential stuffing without locking out a
+  // shared office or campus NAT after a handful of typos. Test harnesses raise the max.
+  authRateWindowMs: toDuration(process.env.AUTH_RATE_WINDOW_MS, 10 * 60 * 1000),
+  authRateMax: toCount(process.env.AUTH_RATE_MAX, 20),
   // Read only from the backend environment. Anything prefixed VITE_ is compiled into
   // the public browser bundle, so the key must never live there.
   geminiApiKey: (process.env.GEMINI_API_KEY || '').trim(),

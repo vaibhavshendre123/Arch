@@ -1,8 +1,10 @@
 import { getUserById, login, register, updateReportProfile } from '../services/auth.service.js'
 
 export async function registerUser(req, res) {
-  const { name, email, password, role } = req.body || {}
-  const result = await register({ name, email, password, role })
+  // `role` is deliberately not read here. Registration assigns the default role, so a
+  // crafted body cannot mint a privileged account.
+  const { name, email, password } = req.body || {}
+  const result = await register({ name, email, password })
   res.status(201).json({ success: true, data: result })
 }
 

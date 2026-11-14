@@ -330,6 +330,8 @@ Compass also works with a local `mongodb://127.0.0.1:27017` string if you switch
 | `CLIENT_URL` | `http://localhost:5173` | Frontend origin, added to the CORS allow-list |
 | `CORS_ORIGINS` | unset | Comma-separated explicit CORS allow-list; unset allows the localhost dev ports |
 | `LOG_REQUESTS` | `true` | Set `false` to silence per-request HTTP logging |
+| `AUTH_RATE_WINDOW_MS` | `600000` | Fixed rate-limit window for the unauthenticated auth routes |
+| `AUTH_RATE_MAX` | `20` | Attempts allowed per window per client IP, per auth route |
 | `MONGO_URI` | `mongodb://127.0.0.1:27017` | MongoDB connection string |
 | `DB_NAME` | `archai` | Database name |
 | `MONGO_SERVER_SELECTION_TIMEOUT_MS` | `10000` | How long to wait for a reachable server |

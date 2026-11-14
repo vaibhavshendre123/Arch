@@ -1,3 +1,5 @@
+import { logger } from '../config/logger.js'
+
 export class ApiError extends Error {
   constructor(statusCode, message, details) {
     super(message)
@@ -23,7 +25,14 @@ export function errorHandler(err, req, res, next) {
   const isServerError = statusCode >= 500
 
   if (isServerError) {
-    console.error(`[error] ${req.method} ${req.originalUrl}`, err)
+    // Deliberately not the error object. A stack trace, a Mongoose validation error or a
+    // driver error can carry document contents and connection detail into the one log
+    // stream that reaches a production sink. The request id is what ties this line back
+    // to the response the caller saw.
+    logger.error(
+      `${req.method} ${req.originalUrl} ${statusCode} ${err.name || 'Error'}: ${err.message || 'no message'}`,
+      { requestId: req.id },
+    )
   }
 
   const body = {
@@ -35,6 +44,7 @@ export function errorHandler(err, req, res, next) {
   }
 
   if (err.details) body.error.details = err.details
+  if (req.id) body.error.requestId = req.id
 
   res.status(statusCode).json(body)
 }

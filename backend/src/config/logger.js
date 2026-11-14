@@ -22,7 +22,8 @@ export const logger = {
   },
   request(req, statusCode, durationMs) {
     if (!env.logRequests) return
-    emit(console.log, 'http', `${req.method} ${req.originalUrl} ${statusCode} ${durationMs}ms`)
+    const id = req.id ? `[${req.id}] ` : ''
+    emit(console.log, 'http', `${id}${req.method} ${req.originalUrl} ${statusCode} ${durationMs.toFixed(1)}ms`)
   },
   startup(details) {
     emit(console.log, 'info', `Arch-AI backend listening on ${details.url}`)

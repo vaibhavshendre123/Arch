@@ -55,6 +55,9 @@ export default defineConfig({
         JWT_SECRET: 'e2e-only-signing-key',
         BCRYPT_ROUNDS: '4',
         LOG_REQUESTS: 'false',
+        // Every spec signs in from the same loopback IP; the production limiter would
+        // throttle the harness, not an attacker. Raised explicitly for this run.
+        AUTH_RATE_MAX: '10000',
         // No outbound advisor calls from an end-to-end run.
         GEMINI_API_KEY: '',
       },

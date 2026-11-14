@@ -6,11 +6,12 @@ import {
   updateMyReportProfile,
 } from '../controllers/auth.controller.js'
 import { requireAuth } from '../middleware/auth.js'
+import { loginRateLimit, registerRateLimit } from '../middleware/rateLimit.js'
 
 const router = Router()
 
-router.post('/register', registerUser)
-router.post('/login', loginUser)
+router.post('/register', registerRateLimit, registerUser)
+router.post('/login', loginRateLimit, loginUser)
 router.get('/me', requireAuth, getCurrentUser)
 
 // Separate resource from /auth/me rather than a second route on the same path, so the

@@ -46,7 +46,7 @@ function signToken(user) {
   })
 }
 
-export async function register({ name, email, password, role }) {
+export async function register({ name, email, password }) {
   const { valid, errors } = validateRegistration({ name, email, password })
   if (!valid) throw new ApiError(400, 'Validation failed', errors)
 
@@ -64,7 +64,10 @@ export async function register({ name, email, password, role }) {
       name: String(name).trim(),
       email: normalised,
       passwordHash,
-      role: role && ['student', 'faculty', 'admin'].includes(role) ? role : 'student',
+      // Registration is self-service, so the role is never taken from the request body.
+      // Accepting it would let anyone create an admin account before any authorization
+      // rule exists to notice. Privileged accounts are provisioned out of band.
+      role: 'student',
     })
   } catch (error) {
     if (error.code === 11000) throw new ApiError(409, 'An account with that email already exists.')
