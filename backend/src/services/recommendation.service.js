@@ -42,6 +42,7 @@ export function isAdvisorConfigured() {
 function safeText(value, max = MAX_TEXT) {
   if (value === null || value === undefined) return ''
   return String(value)
+    // eslint-disable-next-line no-control-regex -- stripping control characters is the point
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()

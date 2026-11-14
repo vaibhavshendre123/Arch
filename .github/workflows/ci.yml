@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A superseded run on the same ref is cancelled rather than left to finish: the newer commit
+# is the one under review, and this keeps the free minutes budget for it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend (lint, unit, coverage, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        # Warnings are allowed; the command fails on any error.
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Coverage floor (src/lib only)
+        # The floor is deliberately a little under the current measured line coverage
+        # (~89%) so a small refactor does not fail CI, but a genuinely untested new module
+        # does. Raise it as the number rises.
+        run: npm run test:coverage
+
+      - name: Production build
+        run: npm run build
+
+  backend:
+    name: Backend (lint, unit, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build check
+        # A Node service has no bundle step; this parses every source file and loads the
+        # Express app, which is what a build failure would look like here.
+        run: npm run build
+
+  # The integration and browser suites are deliberately not in CI yet: they need a live
+  # MongoDB instance and a Playwright browser image, and they are runnable locally with
+  # `npm run test:integration` and `npm run test:e2e`. Documented in docs/REMAINING-WORK.md.

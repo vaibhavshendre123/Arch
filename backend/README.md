@@ -145,7 +145,20 @@ Production-style (plain `node`, no watcher):
 npm start
 ```
 
-Startup order is deliberate: the backend connects to MongoDB **first** and only starts listening on `PORT` (default **5000**) once the database is reachable. If MongoDB is unavailable it logs the reason and exits rather than serving requests against a broken connection.
+Quality gates:
+
+```bash
+npm run lint     # oxlint over src/, tests/ and scripts/
+npm test         # node --test tests/*.test.js
+npm run build    # parses every source file and loads the Express app
+```
+
+Boot-time environment validation runs before the database connection: a `PORT` that is not a
+usable port, an unknown `NODE_ENV`, a malformed origin or a too-short `JWT_SECRET` stops the
+process with the reasons listed, instead of being silently replaced by a default. `NODE_ENV=production`
+additionally requires `JWT_SECRET` and `MONGO_URI`.
+
+Startup order is deliberate: the backend validates its configuration, then connects to MongoDB **first** and only starts listening on `PORT` (default **5000**) once the database is reachable. If MongoDB is unavailable it logs the reason and exits rather than serving requests against a broken connection.
 
 ## Verifying the health endpoint
 
@@ -286,7 +299,9 @@ Violations return `400` in the shared error format. `PUT` runs Mongoose validato
 | Simulation, mining, evaluation, reports, interview | Browser only — no API, results are not persisted |
 | AI recommendations | Browser only — deterministic rules, no model is called |
 
-The backend has no test suite and no `test` or `lint` script. The pipeline tests live in the
+The backend has its own unit suite (`npm test` in `backend/`), covering auth validation, the
+role guard, the rate limiter, error-handler redaction, environment validation and the
+architecture/parameter schema. The simulation, mining and scoring pipeline tests live in the
 frontend package and run against the pure `src/lib/` modules, which have no browser or
 Node-specific dependencies.
 

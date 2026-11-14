@@ -50,7 +50,7 @@ bottleneck rather than inventing one.
 
 **Frontend** — React 19, Vite 8, Tailwind 4, React Router, Recharts, Three.js, Oxlint
 **Backend** — Node.js, Express 5, Mongoose 9, MongoDB Atlas, JWT, bcrypt
-**Linting** — Oxlint (frontend only; the backend defines no lint script)
+**Linting** — Oxlint (frontend and backend)
 
 ## Getting started
 
@@ -90,16 +90,19 @@ development does not depend on the backend's CORS allowlist. Override with
 | Command | Where | Does |
 | --- | --- | --- |
 | `npm run dev` | both | Start the dev server |
-| `npm run build` | frontend | Production build to `dist/` |
-| `npm run lint` | frontend | Oxlint |
-| `npm test` | frontend | Unit suite (Node's built-in runner, no test framework installed) |
+| `npm run build` | both | Frontend: production build to `dist/`. Backend: parse every source file and load the Express app |
+| `npm run lint` | both | Oxlint |
+| `npm test` | both | Unit suite (Node's built-in runner, no test framework installed) |
+| `npm run test:coverage` | frontend | Unit suite plus a line-coverage floor on `src/lib/**` |
 | `npm run test:integration` | frontend | HTTP suite against a real backend on a disposable database |
 | `npm run test:e2e` | frontend | Browser suite in Chrome via Playwright, also on a disposable database |
 | `npm run test:all` | frontend | All three, in order |
 | `npm run preview` | frontend | Serve the production build locally |
 
-The backend defines only `npm start` and `npm run dev`; it has no build, lint or test
-script.
+CI (`.github/workflows/ci.yml`) runs lint, unit tests, the coverage floor and both builds on
+Node 22 for every push and pull request. The integration and browser suites are not in CI yet
+because they need a live MongoDB and a Playwright browser image; they run locally with the
+commands above.
 
 `npm test` covers:
 

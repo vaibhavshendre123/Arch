@@ -8,6 +8,7 @@
     "build": "vite build",
     "lint": "oxlint",
     "test": "node --test tests/*.test.js",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=src/lib/** --test-coverage-include-all --test-coverage-lines=86 tests/*.test.js",
     "test:integration": "node tests/integration/run.mjs",
     "test:e2e": "playwright test",
     "test:all": "npm test && npm run test:integration && npm run test:e2e",

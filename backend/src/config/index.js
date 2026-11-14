@@ -46,6 +46,16 @@ function toDnsServers(value) {
   return valid.length ? valid : null
 }
 
+function isOrigin(value) {
+  if (value === '*') return true
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 const nodeEnv = process.env.NODE_ENV || 'development'
 const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173'
 
@@ -93,3 +103,71 @@ export const env = Object.freeze({
   advisorWindowMs: toDuration(process.env.ADVISOR_WINDOW_MS, 60000),
   advisorMaxPerWindow: toDuration(process.env.ADVISOR_MAX_PER_WINDOW, 10),
 })
+
+/**
+ * Configuration problems that must stop the process rather than be silently replaced by a
+ * default.
+ *
+ * The parsers above deliberately fall back when a value is absent, so a bare clone still
+ * boots. But a value that IS set and cannot be understood is a typo the operator needs to
+ * see: silently serving on port 5000 because PORT was "50o0" is worse than refusing to
+ * start. This runs from server.js at boot, not at import, so a test that imports config
+ * is never affected.
+ */
+export function envProblems(source = process.env) {
+  const problems = []
+
+  const whenSet = (name, check, expectation) => {
+    const raw = source[name]
+    if (raw === undefined || raw === '') return
+    if (!check(String(raw))) problems.push(`${name} ${expectation} (got "${raw}")`)
+  }
+  const intIn = (min, max) => (raw) => {
+    const n = Number(raw)
+    return Number.isInteger(n) && n >= min && n <= max
+  }
+
+  whenSet('NODE_ENV', (v) => ['development', 'production', 'test'].includes(v), 'must be development, production or test')
+  whenSet('PORT', intIn(1, 65535), 'must be an integer between 1 and 65535')
+  whenSet('API_PREFIX', (v) => v.startsWith('/'), 'must start with "/"')
+  whenSet('LOG_REQUESTS', (v) => v === 'true' || v === 'false', 'must be "true" or "false"')
+  whenSet('BCRYPT_ROUNDS', intIn(4, 31), 'must be an integer between 4 and 31')
+  whenSet('MONGO_SERVER_SELECTION_TIMEOUT_MS', intIn(1, 600000), 'must be a positive integer of at most 600000')
+  whenSet('AUTH_RATE_WINDOW_MS', intIn(1, 600000), 'must be a positive integer of at most 600000')
+  whenSet('AUTH_RATE_MAX', intIn(1, 100000), 'must be an integer between 1 and 100000')
+  whenSet('GEMINI_TIMEOUT_MS', intIn(1, 600000), 'must be a positive integer of at most 600000')
+  whenSet('GEMINI_MAX_ATTEMPTS', intIn(1, 10), 'must be an integer between 1 and 10')
+  whenSet('ADVISOR_WINDOW_MS', intIn(1, 600000), 'must be a positive integer of at most 600000')
+  whenSet('ADVISOR_MAX_PER_WINDOW', intIn(1, 10000), 'must be an integer between 1 and 10000')
+  whenSet('CLIENT_URL', isOrigin, 'must be an http(s) origin')
+  whenSet(
+    'CORS_ORIGINS',
+    (v) => v.split(',').every((item) => isOrigin(item.trim())),
+    'must be a comma-separated list of http(s) origins',
+  )
+  whenSet(
+    'MONGO_DNS_SERVERS',
+    (v) => v.split(',').every((item) => /^\d{1,3}(\.\d{1,3}){3}$/.test(item.trim())),
+    'must be a comma-separated list of IPv4 addresses',
+  )
+
+  // A secret that is present but trivially short is worse than no secret at all, because it
+  // looks configured.
+  if (source.JWT_SECRET && source.JWT_SECRET.length < 16) {
+    problems.push('JWT_SECRET must be at least 16 characters')
+  }
+
+  if (source.NODE_ENV === 'production') {
+    if (!source.JWT_SECRET) problems.push('JWT_SECRET is required in production')
+    if (!source.MONGO_URI) problems.push('MONGO_URI is required in production')
+  }
+
+  return problems
+}
+
+export function assertEnv(source = process.env) {
+  const problems = envProblems(source)
+  if (problems.length) {
+    throw new Error(`Invalid environment configuration:\n  - ${problems.join('\n  - ')}`)
+  }
+}

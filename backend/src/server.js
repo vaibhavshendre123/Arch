@@ -1,5 +1,5 @@
 import app from './app.js'
-import { env } from './config/index.js'
+import { assertEnv, env } from './config/index.js'
 import { logger } from './config/logger.js'
 import { connectDatabase, disconnectDatabase } from './config/database.js'
 
@@ -7,6 +7,17 @@ let server = null
 let shuttingDown = false
 
 async function start() {
+  // First, before the database connection or the listener. A malformed PORT or a
+  // production boot with no JWT_SECRET must stop here with the actual reason, rather
+  // than being silently replaced by a default and discovered later as wrong behaviour.
+  try {
+    assertEnv()
+  } catch (error) {
+    logger.error('Cannot start Arch-AI backend: invalid environment configuration')
+    logger.error(error.message)
+    process.exit(1)
+  }
+
   try {
     await connectDatabase()
   } catch (error) {

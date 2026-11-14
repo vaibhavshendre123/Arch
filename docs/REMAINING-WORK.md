@@ -1,8 +1,8 @@
 # Arch-AI — Remaining Work Plan
 
-Updated at the end of the Simulation fidelity / validation depth work (Phase 9). Everything
-listed as done below is committed and pushed to `origin/main`, except Phase 9 itself, which
-is complete and verified but **not yet committed**.
+Updated after the simulation-fidelity and hardening pass. Phases 0–9 are committed locally; the
+hardening workstreams (auth/transport, data integrity, CI) landed as their own commits on top.
+Nothing in this pass has been pushed.
 
 ## Where things stand
 
@@ -17,7 +17,9 @@ is complete and verified but **not yet committed**.
 | 6 | Simulation page: presentation, accessibility, result persistence | Done |
 | 7 | Documentation | Done |
 | 8 | Test coverage: every route has a browser journey | Done |
-| 9 | Validation depth, real mining deviations, live simulation instrumentation | Done, uncommitted |
+| 9 | Validation depth, real mining deviations, live simulation instrumentation | Done |
+| H1 | Hardening: auth/transport, data integrity, backend quality gates and CI | Done |
+| H2 | Simulation fidelity, evaluation transparency, mining import/export, UX correctness | In progress |
 | — | Deployment | **Not started** |
 | — | Research write-up groundwork | **Not started** |
 
@@ -103,6 +105,39 @@ the pre-existing warnings were left alone.
 
 ---
 
+## Hardening pass (H1 — DONE)
+
+Three commits, one concern each.
+
+**Auth and transport.** Registration no longer accepts a client-supplied `role`; the service
+assigns `student` and privileged accounts are provisioned out of band. `POST /auth/register`
+and `POST /auth/login` share a fixed-window, in-process limiter keyed by client IP
+(`AUTH_RATE_WINDOW_MS`, `AUTH_RATE_MAX`; default 20 per 10 minutes, separate buckets per
+route). `helmet` and `compression` are wired in, with CORP opened up so a cross-origin
+bundle still loads and the CORS allowlist remains the access control. Request logging goes
+through `logger.request`, so `LOG_REQUESTS=false` now works, and every response carries an
+`X-Request-Id` that error bodies echo. The 5xx handler logs only status, route, request id,
+error name and message — never the error object or request body.
+
+**Data integrity.** Deleting a project cascades its `ArchitectureVersion` documents first, so
+a partial failure stays retryable instead of stranding a history with nothing to trigger its
+cleanup. Node parameters are validated server-side against a mirror of the frontend
+vocabulary (`backend/src/models/parameter-spec.js`); unknown keys are rejected, values must be
+finite and inside the UI ranges, capacity must be positive and probabilities must be 0..1. A
+contract test fails if the two copies of the vocabulary drift. `simCache` holds at most six
+full results with delete-then-write eviction; the persisted summaries keep their own cap.
+
+**Quality gates.** The backend now defines `lint` (oxlint), `test` (node's runner) and
+`build` (parses every source file and loads the Express app without binding a port).
+`.github/workflows/ci.yml` runs frontend lint, unit tests, the coverage floor and
+`vite build`, then the same three backend gates, on Node 22 with npm caching. The coverage
+floor is 86% line coverage on `src/lib/**`; measured is ~89%. Boot-time environment
+validation (`assertEnv`) runs before the database connection and refuses to start on a
+malformed `PORT`, unknown `NODE_ENV`, malformed origin, too-short `JWT_SECRET`, or a
+production boot missing its secrets.
+
+---
+
 ## Phase 10 — Deployment (nothing is live)
 
 The production bundle uses a relative `/api`, so a static host plus a reverse proxy works.
@@ -145,7 +180,7 @@ Do this while the development data is intact; it is the only copy.
 ## House rules for the rest of this plan
 
 1. One phase per session, confirmed before starting.
-2. No commit or push without explicit instruction.
+2. Commit per workstream when instructed; never push without explicit instruction.
 3. Integration and E2E suites always run against a disposable database; the development
    database is never written to by tests.
 4. Report PASS/FAIL per area at the end of each phase.
