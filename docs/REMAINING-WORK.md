@@ -1,7 +1,8 @@
 # Arch-AI — Remaining Work Plan
 
-Updated at the end of the Simulation work. Everything listed as done below is committed and
-pushed to `origin/main`.
+Updated at the end of the Simulation fidelity / validation depth work (Phase 9). Everything
+listed as done below is committed and pushed to `origin/main`, except Phase 9 itself, which
+is complete and verified but **not yet committed**.
 
 ## Where things stand
 
@@ -15,10 +16,12 @@ pushed to `origin/main`.
 | 5 | Frontend↔backend integration + browser E2E | Done |
 | 6 | Simulation page: presentation, accessibility, result persistence | Done |
 | 7 | Documentation | Done |
+| 8 | Test coverage: every route has a browser journey | Done |
+| 9 | Validation depth, real mining deviations, live simulation instrumentation | Done, uncommitted |
 | — | Deployment | **Not started** |
 | — | Research write-up groundwork | **Not started** |
 
-Verification totals: **unit 363/363 · integration 61/61 · E2E 49/49 · build clean · lint clean.**
+Verification totals: **unit 449/449 · integration 61/61 · E2E 66/66 · build clean · lint warnings only.**
 
 ### Decisions taken, for the record
 
@@ -52,11 +55,55 @@ single session, because Process Mining consumes the event log and that is delibe
 persisted. `e2e/hidden-routes.spec.js` covers the three routes withdrawn from the sidebar,
 including that each redirects to `/login` when signed out.
 
-Verification totals are now **unit 363 · integration 61 · E2E 66**.
+Verification totals are now **unit 449 · integration 61 · E2E 66**.
 
 ---
 
-## Phase 9 — Deployment (nothing is live)
+## Phase 9 — Validation depth, real mining deviations, live simulation instrumentation (DONE, uncommitted)
+
+Three related gaps closed in one pass, because they share the same substrate:
+
+### Validation (`lib/validate.js`, rewritten)
+
+- Stable error `CODES` exported for the UI and the tests; every finding is a structured
+  object (`code`, `severity`, `message`, `suggestion`, `componentIds`, `edgeIds`) instead of
+  a bare string.
+- Architectural rules beyond graph sanity: application-layer bypass, invalid client targets,
+  invalid infrastructure access, connection direction, store-connection rules.
+- Non-blocking warnings: no terminal node, no data store, cycles, multiple entry points.
+- `canSimulate` is now a property of the validation result, not a separate function, so the
+  Builder's simulate gate and the worker's guard cannot disagree.
+
+### Process mining (`lib/mining.js`, `lib/contract.js`, `lib/engine.js`)
+
+- `expectedPaths` replaced by `expectedPathModel`, which reports truncation (path budget),
+  entry/terminal shape and cycle presence, so a partial model is never presented as complete.
+- Deviations are classified `trace` (a conformance violation) or `reliability` (failure,
+  retry, queueing on an otherwise conforming path). Conformance is no longer dragged down by
+  recovered retries.
+- The engine keeps every sampled case's events, including cases still in flight when the
+  event budget stops the run. Those are the `INCOMPLETE_TRACE` findings; previously they
+  were silently dropped and the sample showed zero incomplete cases by construction.
+
+### Simulation page (`pages/Simulation.jsx`, `components/sim/*`)
+
+- New subcomponents: `IntelPanel`, `AlertStrip` (with `buildAlerts`), `EventTimeline`,
+  and `flowRender` for the canvas work.
+- Live per-component load during playback, written by the animation frame and polled, so
+  node cards show load as it happens rather than only final figures.
+- `useResults` validates before ever spinning up the worker; an invalid architecture fails
+  immediately with the first real error message instead of a generic one.
+- Process Mining page gained real deviation reporting (the `REAL_DEVIATION = 'none'`
+  placeholder is gone), filters and tooltips.
+
+New unit suites: `tests/validate.test.js` (all spec cases A–N plus structural edge cases
+and the worker backend-bypass guard), `tests/mining.test.js` (deviation categories,
+conformance, provenance, end-to-end pipeline). Lint has warnings only, none of them errors;
+the pre-existing warnings were left alone.
+
+---
+
+## Phase 10 — Deployment (nothing is live)
 
 The production bundle uses a relative `/api`, so a static host plus a reverse proxy works.
 Still required:
@@ -72,7 +119,7 @@ Still required:
 
 ---
 
-## Phase 10 — Research write-up groundwork
+## Phase 11 — Research write-up groundwork
 
 Do this while the development data is intact; it is the only copy.
 

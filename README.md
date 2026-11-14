@@ -118,6 +118,8 @@ script.
 | `playback.test.js` | Playback timing, reduced motion, and the playback controls |
 | `advisor.test.js`, `advisor-config.test.js` | Two-arm agreement, severities, and the rule-based fallback |
 | `simulation-ui.test.js` | Utilisation unit conversion (the engine reports a 0–1 ratio, the UI shows a percentage) |
+| `validate.test.js` | Every validation rule and error code, structural edge cases, and that the worker's guard cannot be bypassed |
+| `mining.test.js` | Deviation categorisation (trace vs reliability), conformance, path-model truncation, pipeline end to end |
 | `evaluation-ui.test.js`, `score-animation.test.js`, `topbar.test.js`, `theme.test.js` | Evaluation display, animated score, notifications and search, theme tokens |
 
 Several suites assert on source text rather than runtime behaviour, which catches
@@ -136,6 +138,11 @@ is decorative:
 - **Request dots** — positioned by interpolating the real hop timings, coloured by outcome
   (completed, retried, failed, dropped).
 - **Node cards** show measured utilisation, with an alert marker above 85%.
+- **Live load** — while playback runs, per-component load is written by the animation frame
+  and polled by the page, so node cards reflect load as it happens, not only final figures.
+- **Intel panel, alert strip and event timeline** (`components/sim/`) surface the run's
+  live findings: alerts are derived from the same event log the mining report consumes, so
+  what flashes during a run is what the conformance analysis will say afterwards.
 - **Speed** is a time-lapse *target*: the control says how many real seconds the whole run
   should take, and the multiplier is derived. It is deliberately not a bare multiplier,
   because two earlier models of this control produced playback the user had not asked for.

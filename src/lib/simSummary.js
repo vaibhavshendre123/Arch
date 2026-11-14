@@ -53,6 +53,7 @@ export function toSimDigest(sim) {
       totalEvents: Number(logging.totalEvents) || 0,
       loggedEvents: Number(logging.loggedEvents) || 0,
       sampledCases: Number(logging.sampledCases) || 0,
+      unfinishedSampledCases: Number(logging.unfinishedSampledCases) || 0,
       totalCases: Number(logging.totalCases) || 0,
       sampleEvery: Number(logging.sampleEvery) || 1,
     },

@@ -38,8 +38,11 @@ test.describe('simulate, mine, evaluate', () => {
     // Not the empty state and not a permanent spinner: real figures.
     await expect(page.getByText('No mined traces yet.')).toHaveCount(0)
     await expect(page.getByText('Cases Analysed')).toBeVisible({ timeout: 60000 })
-    await expect(page.getByText('Conformance')).toBeVisible()
-    await expect(page.getByText('Real Deviations')).toBeVisible()
+    // The rewritten mining page mentions conformance in the card title, the formula
+    // tooltip and the findings summary, so pin the first match rather than requiring
+    // the string to be unique.
+    await expect(page.getByText('Conformance').first()).toBeVisible()
+    await expect(page.getByText('Trace Deviations').first()).toBeVisible()
   })
 
   test('mining reports a conformance percentage', async ({ page }) => {
@@ -75,7 +78,9 @@ test.describe('simulate, mine, evaluate', () => {
     await startWithProject(page)
     await runOnce(page)
     await page.goto('/evaluation')
-    await expect(page.getByText('Health Score').first()).toBeVisible({ timeout: 60000 })
+    // The sidebar also contains the string "Current Health Score", so waiting on that
+    // text does not prove the derivation table has rendered. Wait for the table itself.
+    await expect(page.getByRole('columnheader', { name: 'Dimension' })).toBeVisible({ timeout: 60000 })
 
     // Every dimension score is rendered as `NN/100`. Collecting them all and range-checking
     // proves the scores are real and on the stated scale, without depending on how the cards

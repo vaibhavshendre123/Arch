@@ -202,13 +202,29 @@ export default function Reports() {
     { key: 'failrate', cells: ['Failure rate', `${toPct(metrics.failureRate).toFixed(2)}%`] },
     { key: 'droprate', cells: ['Drop rate', `${toPct(metrics.dropRate).toFixed(2)}%`] },
     { key: 'll', cells: ["Little's Law concurrency", num(metrics.littleLawConcurrency)] },
-    { key: 'simms', cells: ['Engine wall clock', `${num(metrics.simulatedMs)} ms`] },
+    { key: 'simms', cells: ['Simulated span', `${num((metrics.simulatedMs ?? sim?.simulatedMs) / 1000, 1)} s`] },
+    {
+      key: 'trunc',
+      cells: [
+        'Truncated by event budget',
+        metrics.truncated || sim?.truncated
+          ? `yes — ${num((metrics.simulatedMs ?? sim?.simulatedMs) / 1000, 1)}s of the ${workload.duration ?? sim?.duration ?? 0}s requested`
+          : 'no',
+      ],
+    },
   ]
 
   const logRows = [
     { key: 'total', cells: ['Total events', num(logging.totalEvents)] },
     { key: 'logged', cells: ['Logged events', num(logging.loggedEvents)] },
     { key: 'sampled', cells: ['Sampled cases', num(logging.sampledCases)] },
+    {
+      key: 'unfinished',
+      cells: [
+        'Sampled cases still in flight at run end',
+        `${num(logging.unfinishedSampledCases)} (kept as incomplete traces)`,
+      ],
+    },
     { key: 'cases', cells: ['Total cases', num(logging.totalCases)] },
   ]
 
@@ -216,11 +232,31 @@ export default function Reports() {
     { key: 'tc', cells: ['Total cases', num(statistics.totalCases)] },
     { key: 'cc', cells: ['Completed cases', num(statistics.completedCases)] },
     { key: 'dc', cells: ['Dropped cases', num(statistics.droppedCases)] },
+    { key: 'ic', cells: ['Incomplete cases', num(statistics.incompleteCases ?? statistics.failedCases)] },
     { key: 'lc', cells: ['Logged cases', num(statistics.loggedCases)] },
     { key: 'acl', cells: ['Average case length', num(statistics.avgCaseLength, 2)] },
     { key: 'v', cells: ['Distinct variants', num(statistics.variants)] },
-    { key: 'cr', cells: ['Conformance rate', `${toPct(statistics.conformanceRate).toFixed(2)}%`] },
+    {
+      key: 'cr',
+      cells: [
+        'Conformance rate',
+        statistics.conformanceRate == null || statistics.available === false
+          ? 'unavailable'
+          : `${toPct(statistics.conformanceRate).toFixed(2)}%`,
+      ],
+    },
+    {
+      key: 'td',
+      cells: [
+        'Trace deviations / reliability findings',
+        `${(mining?.traceDeviations || []).length} / ${(mining?.reliabilityFindings || []).length}`,
+      ],
+    },
     { key: 'mw', cells: ['Maximum wait', `${num(statistics.maxWaitMs)} ms`] },
+    {
+      key: 'src',
+      cells: ['Source run', mining?.provenance?.runKey || mining?.provenance?.archHash || '—'],
+    },
   ]
 
   const bottleneckRows = [...(mining?.bottlenecks || [])]
@@ -229,9 +265,9 @@ export default function Reports() {
       key: b.componentId || `${b.component}-${i}`,
       cells: [
         b.component,
-        `${num(b.waitingMs)} ms`,
-        `${num(b.processingMs)} ms`,
-        toPct(b.waitRatio).toFixed(2),
+        `${num(b.waitingMs, 1)} ms`,
+        `${num(b.processingMs, 1)} ms`,
+        `${num(b.waitRatio, 2)}x`,
         num(b.queueDepthMax),
         num(b.visits),
         b.severity || 'low',

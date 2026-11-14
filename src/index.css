@@ -119,6 +119,102 @@
   mask-image: radial-gradient(circle at 50% 40%, black 0%, transparent 70%);
 }
 
+/* ---------------------------------------------------------------------------
+   Simulation control room.
+   A restrained technical backdrop for the simulation arena: a fine grid, a
+   faint cyan wash from the top, and vignette at the edges. Purely decorative
+   background layers; every foreground element is real engine data.
+--------------------------------------------------------------------------- */
+.control-room {
+  position: relative;
+  background-color: var(--color-base-alt);
+  background-image:
+    radial-gradient(1200px 420px at 50% -8%, rgba(82, 229, 199, 0.06), transparent 62%),
+    linear-gradient(var(--color-line-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-line-soft) 1px, transparent 1px);
+  background-size: 100% 100%, 26px 26px, 26px 26px;
+}
+
+.control-room::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(140% 100% at 50% 50%, transparent 58%, rgba(5, 8, 12, 0.5) 100%);
+}
+
+/* Corner ticks for the command bar, drawn with borders so no extra DOM is needed. */
+.corner-ticks {
+  position: relative;
+}
+
+.corner-ticks::before,
+.corner-ticks::after {
+  content: '';
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  pointer-events: none;
+}
+
+.corner-ticks::before {
+  top: -1px;
+  left: -1px;
+  border-top: 1px solid var(--color-teal);
+  border-left: 1px solid var(--color-teal);
+}
+
+.corner-ticks::after {
+  right: -1px;
+  bottom: -1px;
+  border-right: 1px solid var(--color-teal);
+  border-bottom: 1px solid var(--color-teal);
+}
+
+/* Overloaded component: a soft pulse, killed by the global reduced-motion rule. */
+@keyframes sim-overload-pulse {
+  0%,
+  100% {
+    opacity: 0.9;
+  }
+
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.sim-overload-ring {
+  animation: sim-overload-pulse 1.5s ease-in-out infinite;
+}
+
+/* Brief flash when a new run's figures replace the old ones. */
+@keyframes hud-refresh {
+  0% {
+    opacity: 0.45;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+.hud-refresh {
+  animation: hud-refresh 0.45s ease-out;
+}
+
+/* Status LED used across the command bar and alerts. */
+.status-led {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.status-led-bright {
+  box-shadow: 0 0 6px currentColor;
+}
+
 .recharts-surface:focus,
 .recharts-wrapper:focus {
   outline: none;

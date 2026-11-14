@@ -141,7 +141,9 @@ export default function Evaluation() {
 
   const metrics = sim?.metrics || {}
   const bottleneckCount = (mining?.bottlenecks || []).length
-  const deviationCount = (mining?.deviations || []).filter((d) => d && d.type !== 'none').length
+  const allDeviations = (mining?.deviations || []).filter((d) => d && d.type !== 'none')
+  const traceDeviationCount = allDeviations.filter((d) => d.category === 'trace').length
+  const reliabilityCount = allDeviations.length - traceDeviationCount
   const nodes = currentProject.arch?.nodes || []
   const edges = currentProject.arch?.edges || []
 
@@ -159,7 +161,7 @@ export default function Evaluation() {
     {
       icon: <GitBranch size={14} />,
       title: 'Process mining findings',
-      detail: `${bottleneckCount} bottleneck(s) and ${deviationCount} real deviation(s) recovered from the event log, together with case conformance and mean waiting time.`,
+      detail: `${bottleneckCount} bottleneck(s), ${traceDeviationCount} trace deviation(s) affecting conformance and ${reliabilityCount} reliability finding(s) recovered from the event log, together with case conformance and mean waiting time.`,
     },
     {
       icon: <ShieldCheck size={14} />,

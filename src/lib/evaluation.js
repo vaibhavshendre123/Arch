@@ -285,6 +285,12 @@ function processEfficiency(mining) {
   }
   const stats = mining.statistics && typeof mining.statistics === 'object' ? mining.statistics : {}
   const deviations = Array.isArray(mining.deviations) ? mining.deviations : []
+  const traceDeviations = Array.isArray(mining.traceDeviations)
+    ? mining.traceDeviations
+    : deviations.filter((d) => d?.category === 'trace')
+  const reliabilityFindings = Array.isArray(mining.reliabilityFindings)
+    ? mining.reliabilityFindings
+    : deviations.filter((d) => d?.category === 'reliability')
   const bottlenecks = Array.isArray(mining.bottlenecks) ? mining.bottlenecks : []
   const significant = bottlenecks.filter(isSignificantBottleneck)
   const totalCases = num(stats.totalCases)
@@ -294,7 +300,9 @@ function processEfficiency(mining) {
       note: `the log contains ${totalCases} cases, so the process was never observed and this dimension scores 0 rather than guessing at conformance.`,
     }
   }
-  const conformance = clamp(num(stats.conformanceRate, 1), 0, 1)
+  // Conformance is null when nothing could be assessed; treat that as zero
+  // evidence rather than inventing a perfect score.
+  const conformance = stats.conformanceRate == null ? 0 : clamp(num(stats.conformanceRate, 0), 0, 1)
   const deviationPenalty = Math.min(PROCESS_DEVIATION_CAP, PROCESS_DEVIATION_PENALTY * deviations.length)
   const bottleneckPenalty = Math.min(PROCESS_BOTTLENECK_CAP, PROCESS_BOTTLENECK_PENALTY * significant.length)
   const value = 100 - PROCESS_CONFORMANCE_SHARE * (1 - conformance) - deviationPenalty - bottleneckPenalty
@@ -308,7 +316,7 @@ function processEfficiency(mining) {
     .map(([k, v]) => `${k} x${v}`)
   return {
     value: score(value),
-    note: `${pct1(conformance)}% of ${num(stats.completedCases)} completed cases followed an expected path, ${deviations.length} deviation group${deviations.length === 1 ? '' : 's'} (${listOf(types)}) and ${significant.length} bottleneck${significant.length === 1 ? '' : 's'} of at least ${PROCESS_BOTTLENECK_FLOOR_MS} ms per visit were found, so the score is 100 minus ${PROCESS_CONFORMANCE_SHARE} points for the non-conforming share, ${round1(deviationPenalty)} for deviation groups (${PROCESS_DEVIATION_PENALTY} each, capped at ${PROCESS_DEVIATION_CAP}) and ${round1(bottleneckPenalty)} for high/medium bottlenecks of ${PROCESS_BOTTLENECK_FLOOR_MS} ms or more (${PROCESS_BOTTLENECK_PENALTY} each, capped at ${PROCESS_BOTTLENECK_CAP}).`,
+    note: `${pct1(conformance)}% of ${totalCases} sampled cases completed an expected path (conformance counts drops and incomplete traces as non-conforming; recovered failures and retries inside a conforming trace do not reduce it), with ${traceDeviations.length} trace deviation group${traceDeviations.length === 1 ? '' : 's'} and ${reliabilityFindings.length} reliability finding${reliabilityFindings.length === 1 ? '' : 's'} (${listOf(types)}) across ${deviations.length} total group${deviations.length === 1 ? '' : 's'}, plus ${significant.length} bottleneck${significant.length === 1 ? '' : 's'} of at least ${PROCESS_BOTTLENECK_FLOOR_MS} ms per visit; the score is 100 minus ${PROCESS_CONFORMANCE_SHARE} points for the non-conforming share, ${round1(deviationPenalty)} for deviation groups (${PROCESS_DEVIATION_PENALTY} each, capped at ${PROCESS_DEVIATION_CAP}) and ${round1(bottleneckPenalty)} for high/medium bottlenecks of ${PROCESS_BOTTLENECK_FLOOR_MS} ms or more (${PROCESS_BOTTLENECK_PENALTY} each, capped at ${PROCESS_BOTTLENECK_CAP}).`,
   }
 }
 

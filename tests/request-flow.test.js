@@ -73,10 +73,12 @@ describe('buildTrajectories', () => {
       outcomes.has('failed') || outcomes.has('retried'),
       'a saturated run must produce failures or retries',
     )
-    // A retried request still completed, so it must not be reported as a failure.
+    // A retried request still completed, so it must not be reported as a failure. A
+    // "failed" trajectory is one with no terminal event: either a permanent failure
+    // (failures > 0) or a case still in flight when the event budget stopped the run.
     for (const traj of overloaded) {
-      if (traj.outcome === 'failed') assert.equal(traj.failures > 0, true)
       if (traj.outcome === 'retried') assert.ok(traj.failures > 0)
+      if (traj.outcome === 'completed') assert.equal(traj.failures, 0)
     }
   })
 

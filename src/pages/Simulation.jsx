@@ -1,14 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Activity, Boxes, CircleCheck, Gauge, Pause, Play, RotateCcw, TrendingUp, TriangleAlert, Workflow } from 'lucide-react'
+import {
+  Activity,
+  Boxes,
+  CircleAlert,
+  CircleCheck,
+  Gauge,
+  Pause,
+  Play,
+  RotateCcw,
+  ShieldCheck,
+  SkipBack,
+  TrendingUp,
+  TriangleAlert,
+} from 'lucide-react'
 import { useApp, useDispatch } from '../store/AppContext.jsx'
 import { defaultWorkload, workloadPresets } from '../store/reducer.js'
 import { useResults } from '../store/useResults.js'
-import { isClient } from '../data/nodeTypes.js'
+import { validateArchitecture } from '../lib/validate.js'
+import { archHash } from '../lib/contract.js'
 import { utilPct } from '../lib/metrics.js'
 import { buildTrajectories } from '../lib/trajectories.js'
 import { assessLoad } from '../lib/capacity.js'
 import ArchitectureFlow, { FlowLegend } from '../components/ArchitectureFlow.jsx'
+import IntelPanel from '../components/sim/IntelPanel.jsx'
+import AlertStrip, { buildAlerts } from '../components/sim/AlertStrip.jsx'
+import EventTimeline from '../components/sim/EventTimeline.jsx'
 import {
   resolveSpeed,
   speedLabel,
@@ -23,7 +40,6 @@ import {
   Badge,
   Button,
   Card,
-  DataTable,
   Empty,
   Field,
   PageHead,
@@ -36,7 +52,6 @@ import {
 import { LatencyChart, MemoryChart, QueueChart } from '../components/charts.jsx'
 
 const MEAN_LATENCY_S = 0.2
-const EVENT_ROWS = 40
 
 const linkBtn =
   'inline-flex items-center gap-2 rounded-[7px] border border-accent bg-accent px-3.5 py-2 text-[13px] font-semibold text-[#1a1206] transition hover:brightness-110'
@@ -60,18 +75,11 @@ function toPct(value) {
   return v <= 1 ? v * 100 : v
 }
 
-function canSimulate(arch) {
-  const nodes = arch?.nodes || []
-  if (!nodes.length) return false
-  if (!(arch?.edges || []).length) return false
-  return nodes.some((n) => isClient(n))
-}
-
 export default function Simulation() {
   const { currentProject, workload, simSummaries } = useApp()
   const dispatch = useDispatch()
   const arch = currentProject?.arch
-  const { sim, status, error, run, runCapacity, key: resultKey } = useResults(arch, { autoRun: false })
+  const { sim, mining, status, error, run, runCapacity, key: resultKey } = useResults(arch, { autoRun: false })
   // How many real seconds the whole run should take while it animates.
   const [wallClock, setWallClock] = useState(DEFAULT_WALL_CLOCK)
   const [capacity, setCapacity] = useState(null)
@@ -123,11 +131,19 @@ export default function Simulation() {
   // Written directly by the animation each frame, so the page never re-renders while it plays.
   const flowReadout = useRef(null)
   const flowProgress = useRef(null)
+  // Live per-component load written by the animation; polled on the timer below.
+  const nodeLoadRef = useRef(null)
+
+  // Selection in the architecture arena drives the component intelligence panel.
+  const [selectedNode, setSelectedNode] = useState(null)
 
   // Elapsed playback time, polled rather than read from the animation. The animation writes
   // into refs to avoid re-rendering every frame, so there is nothing to render from without a
   // timer of our own. 100 ms is frequent enough to feel live and cheap enough to ignore.
   const [flowElapsed, setFlowElapsed] = useState(0)
+  // The same timer also samples the live per-node load the animation writes into its ref,
+  // so the intelligence panel stays in step with the playback head without an extra loop.
+  const [liveLoad, setLiveLoad] = useState(null)
   const flowStartedAt = useRef(0)
   useEffect(() => {
     if (!flowPlaying) return undefined
@@ -135,6 +151,7 @@ export default function Simulation() {
     setFlowElapsed(0)
     const id = setInterval(() => {
       setFlowElapsed((Date.now() - flowStartedAt.current) / 1000)
+      setLiveLoad(nodeLoadRef.current)
     }, 100)
     return () => clearInterval(id)
   }, [flowPlaying, replayKey])
@@ -157,6 +174,15 @@ export default function Simulation() {
   const replayFlow = useCallback(() => {
     setFlowDone(false)
     setPlayRequested(true)
+    setReplayKey((k) => k + 1)
+  }, [])
+
+  // Reset returns the replay head to t = 0 and holds it there. It never re-runs the engine
+  // and never edits the results: playback speed and position are presentation only.
+  const resetFlow = useCallback(() => {
+    setFlowDone(false)
+    setPlayRequested(false)
+    setFlowElapsed(0)
     setReplayKey((k) => k + 1)
   }, [])
 
@@ -282,6 +308,21 @@ useEffect(() => {
             ? 'headroom'
             : 'unknown'
 
+  // Alerts and bottleneck highlighting come from the same engine result the charts read.
+  // Declared before the early returns above so hook order stays constant on every render.
+  const alerts = useMemo(() => buildAlerts(shownSim ?? sim), [shownSim, sim])
+  const bottleneckIds = useMemo(
+    () =>
+      (mining?.bottlenecks || [])
+        .filter((b) => b.severity === 'high' && b.componentId)
+        .map((b) => b.componentId),
+    [mining],
+  )
+  const selectedArchNode = useMemo(
+    () => (selectedNode ? arch?.nodes?.find((n) => n.id === selectedNode) || null : null),
+    [arch, selectedNode],
+  )
+
   if (!currentProject) {
     return (
       <Card>
@@ -299,7 +340,12 @@ useEffect(() => {
     )
   }
 
-  if (!canSimulate(arch)) {
+  // Run full validation to decide if simulation is possible. This uses the same
+  // authoritative rules as the Architecture Builder's Validate button.
+  const validationResult = arch ? validateArchitecture(arch) : { canSimulate: false, errors: [], warnings: [] }
+  const validationErrors = validationResult.errors || []
+
+  if (!validationResult.canSimulate) {
     return (
       <div>
         <PageHead
@@ -308,16 +354,33 @@ useEffect(() => {
           desc="Apply a workload to the current architecture and measure latency, throughput, resource utilisation and memory."
         />
         <Card>
-          <Empty
-            icon={<Workflow size={26} />}
-            title="This architecture cannot be simulated yet."
-            hint="The engine needs at least one edge and a client node to generate an arrival stream. Add them in the Architecture Builder."
-            action={
+          <div className="flex items-start gap-3 mb-4">
+            <ShieldCheck size={22} className="mt-0.5 shrink-0 text-red" />
+            <div>
+              <div className="font-semibold text-ink text-[14px] mb-1">
+                {validationErrors.length > 0 ? 'Architecture validation failed' : 'This architecture cannot be simulated yet'}
+              </div>
+              <div className="text-[12.5px] text-ink-dim mb-3">
+                Fix the errors below in the Architecture Builder before running a simulation.
+              </div>
+              {validationErrors.length > 0 && (
+                <div className="space-y-2 mb-4">
+                  {validationErrors.map((e, i) => (
+                    <div key={`verr-${i}`} className="flex gap-2 rounded-[7px] border border-red/30 bg-red/5 px-3 py-2.5">
+                      <CircleAlert size={13} className="mt-0.5 shrink-0 text-red" />
+                      <div>
+                        <div className="text-[12px] text-red font-medium">{e.message}</div>
+                        {e.suggestion && <div className="text-[11.5px] text-ink-dim mt-0.5">{e.suggestion}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
               <Link to="/builder" className={linkBtn}>
                 Open Architecture Builder
               </Link>
-            }
-          />
+            </div>
+          </div>
         </Card>
       </div>
     )
@@ -329,8 +392,8 @@ useEffect(() => {
   // workload is being simulated.
   const viewSim = shownSim ?? sim
   // True when a newer run is still being computed and the numbers on screen belong to the
-  // previous run. Previously signalled only by text colour, which is easy to miss and easy
-  // to mistake for the current run when reading results.
+  // previous run. Previously signalled only by text colour, which is easy to miss and easy to
+  // mistake for the current run when reading results.
   const showingStaleRun = Boolean(viewSim) && viewSim !== sim
   const summarySource = summarySim ?? viewSim
   const metrics = summarySource?.metrics || {}
@@ -341,10 +404,8 @@ useEffect(() => {
   const peakUtil = components.reduce((max, c) => Math.max(max, utilPct(c.utilization)), 0)
   const activePreset = workloadPresets.find((p) => presetRate(p.concurrentUsers) === arrivalRate)
 
-  const eventRows = (sim?.eventLog || []).slice(0, EVENT_ROWS).map((e, i) => ({
-    key: e.eventId || `${e.caseId || 'case'}-${i}`,
-    cells: [e.caseId, e.activity, e.componentName || e.componentId, `${Math.round(Number(e.timestamp) || 0)} ms`],
-  }))
+  const selectedStat = selectedNode ? viewSim?.components?.[selectedNode] || null : null
+  const selectedLiveLoad = selectedNode && liveLoad ? liveLoad.get(selectedNode) ?? null : null
 
   let hint = 'Configure your workload and start the simulation.'
   let hintTone = 'text-ink-faint'
@@ -362,6 +423,10 @@ useEffect(() => {
       : `Complete — ${Number(metrics.totalRequests || 0).toLocaleString()} requests over ${viewSim.duration}s at ${arrivalRate} req/s`
     hintTone = showingStaleRun ? 'text-accent' : 'text-green'
   }
+
+  // Command-bar status: one word, one colour, always derived from the real state machine.
+  const statusLabel = isRunning ? 'RUNNING' : status === 'error' ? 'ERROR' : showingStaleRun ? 'UPDATING' : viewSim ? 'COMPLETE' : 'STANDBY'
+  const statusColor = isRunning ? colors.accent : status === 'error' ? colors.red : showingStaleRun ? colors.accent : viewSim ? colors.green : colors.inkDim
 
   const derivedConcurrency = (Number(metrics.throughputPerSec) || 0) * (Number(metrics.avgLatencyMs) || 0)
 
@@ -388,8 +453,10 @@ useEffect(() => {
       ]
     : []
 
+  const currentHash = arch ? archHash(arch) : null
+
   return (
-    <div>
+    <div className="min-h-full">
       <PageHead
         eyebrow="Discrete Event Simulation"
         title={`Simulation — ${currentProject.name}`}
@@ -401,6 +468,138 @@ useEffect(() => {
           </div>
         }
       />
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Command bar: status, transport, playback speed and run identity.    */}
+      {/* Every control is wired to the same handlers the page already used.  */}
+      {/* ------------------------------------------------------------------ */}
+      <section
+        aria-label="Simulation command bar"
+        className="corner-ticks mb-4 flex flex-wrap items-center gap-x-4 gap-y-2.5 rounded-panel border border-line bg-surface px-4 py-3"
+      >
+        <div className="flex min-w-[128px] items-center gap-2.5">
+          <span
+            className={`status-led status-led-bright ${isRunning || (viewSim && !showingStaleRun) ? '' : ''}`}
+            style={{ background: statusColor, color: statusColor }}
+            aria-hidden="true"
+          />
+          <div>
+            <div className="font-mono text-[9.5px] tracking-widest text-ink-faint uppercase">status</div>
+            <div className="font-mono text-[12.5px] font-bold" style={{ color: statusColor }}>
+              {statusLabel}
+            </div>
+          </div>
+        </div>
+
+        <div className="h-8 w-px bg-line-soft" aria-hidden="true" />
+
+        {/* The one and only run button. Named for assistive tech and for the e2e suite. */}
+        <Button
+          variant="primary"
+          onClick={startRun}
+          disabled={isRunning}
+          icon={isRunning ? <SpinnerIcon /> : <Play size={14} />}
+        >
+          {isRunning ? 'Running…' : viewSim ? 'Run Simulation Again' : 'Start Simulation'}
+        </Button>
+
+        {/* Transport. Only offered when there is a live event log to replay; a restored
+            summary has no log, so playback is unavailable rather than silently broken. */}
+        {shownSim ? (
+          <div className="flex items-center gap-1.5">
+            {flowDone ? (
+              <Button size="sm" variant="primary" onClick={replayFlow} icon={<RotateCcw size={13} />}>
+                Replay
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant={flowPlaying ? 'default' : 'primary'}
+                onClick={toggleFlow}
+                icon={flowPlaying ? <Pause size={13} /> : <Play size={13} />}
+              >
+                {flowPlaying ? 'Pause' : flowElapsed > 0 ? 'Resume' : 'Play'}
+              </Button>
+            )}
+            {!flowDone ? (
+              <Button size="sm" onClick={resetFlow} icon={<SkipBack size={13} />} title="Return the replay to t = 0">
+                Reset
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="h-8 w-px bg-line-soft" aria-hidden="true" />
+
+        {/*
+          Playback length. The buttons used to read "5s 10s 20s" with only a tooltip,
+          which reads as a speed rather than a duration the whole run is squeezed
+          into. Labelled explicitly, exposed as a radio group, and each option states
+          the multiplier it produces for the run currently configured.
+        */}
+        <div className="flex items-center gap-1.5">
+          <span className="mr-0.5 font-mono text-[10.5px] text-ink-faint">play in</span>
+          <div
+            role="radiogroup"
+            aria-label="Playback length for the whole run"
+            className="flex items-center gap-0.5 rounded-[6px] border border-line-soft bg-raised p-0.5"
+          >
+            {WALL_CLOCK_TARGETS.map((s) => (
+              <button
+                key={s.key}
+                type="button"
+                role="radio"
+                aria-checked={wallClock === s.key}
+                onClick={() => setWallClock(s.key)}
+                title={`Animate the whole ${duration} s run in ${s.label} (${speedLabel(
+                  resolveSpeed({ durationSec: duration, wallClockSec: s.key }),
+                )})`}
+                className={`rounded-[4px] px-1.5 py-0.5 font-mono text-[10.5px] transition ${
+                  wallClock === s.key ? 'bg-accent text-[#1a1206]' : 'text-ink-faint hover:text-ink'
+                }`}
+              >
+                {s.label}
+              </button>
+            ))}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={wallClock === REAL_TIME}
+              onClick={() => setWallClock(REAL_TIME)}
+              title="Animate at the rate the engine actually used, with no time compression"
+              className={`rounded-[4px] px-1.5 py-0.5 font-mono text-[10.5px] transition ${
+                wallClock === REAL_TIME ? 'bg-accent text-[#1a1206]' : 'text-ink-faint hover:text-ink'
+              }`}
+            >
+              1:1
+            </button>
+          </div>
+        </div>
+
+        {/* Clocks and identity: requested vs simulated span, speed, seed, architecture. */}
+        <div className="ml-auto flex flex-wrap items-center gap-x-3.5 gap-y-1 font-mono text-[10.5px] text-ink-faint">
+          <span>
+            requested <span className="text-ink">{Number(summarySource?.duration ?? duration).toFixed(0)} s</span>
+          </span>
+          <span>
+            simulated{' '}
+            <span style={{ color: viewSim?.truncated ? colors.accent : colors.ink }}>
+              {((Number(summarySource?.simulatedMs || 0) / 1000) || 0).toFixed(1)} s
+            </span>
+          </span>
+          <span>
+            speed <span className="text-ink">{speedLabel(flowSpeed)}</span>
+          </span>
+          <span>
+            seed <span className="text-ink">{String(summarySource?.seed ?? seed)}</span>
+          </span>
+          {currentHash ? (
+            <span className="hidden lg:inline">
+              arch <span className="text-teal">{currentHash.slice(0, 8)}</span>
+            </span>
+          ) : null}
+        </div>
+      </section>
 
       {/*
         The summary is placed above the diagram and the control column on purpose. It used to
@@ -439,7 +638,7 @@ useEffect(() => {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <div key={resultKey} className="hud-refresh grid grid-cols-2 gap-4 lg:grid-cols-4">
             <StatCard
               label="Avg Latency (p50)"
               value={`${Math.round(Number(metrics.p50) || 0)} ms`}
@@ -468,6 +667,25 @@ useEffect(() => {
               icon={<TrendingUp size={14} />}
               delta={`Little's Law L = λW ≈ ${Math.round(derivedConcurrency)} concurrent`}
             />
+          </div>
+
+          {/* Secondary HUD strip: the rest of the engine's headline metrics, compact. */}
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+            {[
+              ['p99', `${Math.round(Number(metrics.p99) || 0)} ms`, colors.ink],
+              ['max latency', `${Math.round(Number(metrics.maxLatencyMs) || 0)} ms`, colors.ink],
+              ['total requests', Number(metrics.totalRequests || 0).toLocaleString(), colors.ink],
+              ['completed', Number(metrics.completedRequests || 0).toLocaleString(), colors.green],
+              ['failed', Number(metrics.failedRequests || 0).toLocaleString(), (Number(metrics.failedRequests) || 0) > 0 ? colors.red : colors.ink],
+              ['dropped', Number(metrics.droppedRequests || 0).toLocaleString(), (Number(metrics.droppedRequests) || 0) > 0 ? colors.accent : colors.ink],
+            ].map(([label, value, tone]) => (
+              <div key={label} className="rounded-[7px] border border-line-soft bg-raised px-3 py-2">
+                <div className="font-mono text-[9.5px] tracking-wider text-ink-faint uppercase">{label}</div>
+                <div className="mt-0.5 font-mono text-[14px] font-semibold" style={{ color: tone }}>
+                  {value}
+                </div>
+              </div>
+            ))}
           </div>
 
           {/*
@@ -513,221 +731,185 @@ useEffect(() => {
         </Card>
       ) : null}
 
-      <div className="mb-5 grid grid-cols-1 items-start gap-5 min-[1100px]:grid-cols-[2fr_320px]">
-        <div className="min-w-0">
-          <Card
-            title="Architecture & live request flow"
-            sub={`Dashes travel along each connection at the rate that connection actually carried traffic, measured from the run. Playback covers the ${duration} s workload and then stops.`}
-            actions={
-              <div className="flex flex-wrap items-center gap-1.5">
-                {/*
-                  Playback length. The buttons used to read "5s 10s 20s" with only a tooltip,
-                  which reads as a speed rather than a duration the whole run is squeezed
-                  into. Labelled explicitly, exposed as a radio group, and each option states
-                  the multiplier it produces for the run currently configured.
-                */}
-                <span className="mr-0.5 font-mono text-[10.5px] text-ink-faint">play in</span>
-                <div
-                  role="radiogroup"
-                  aria-label="Playback length for the whole run"
-                  className="flex items-center gap-0.5 rounded-[6px] border border-line-soft bg-raised p-0.5"
-                >
-                  {WALL_CLOCK_TARGETS.map((s) => (
-                    <button
-                      key={s.key}
-                      type="button"
-                      role="radio"
-                      aria-checked={wallClock === s.key}
-                      onClick={() => setWallClock(s.key)}
-                      title={`Animate the whole ${duration} s run in ${s.label} (${speedLabel(
-                        resolveSpeed({ durationSec: duration, wallClockSec: s.key }),
-                      )})`}
-                      className={`rounded-[4px] px-1.5 py-0.5 font-mono text-[10.5px] transition ${
-                        wallClock === s.key ? 'bg-accent text-[#1a1206]' : 'text-ink-faint hover:text-ink'
-                      }`}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={wallClock === REAL_TIME}
-                    onClick={() => setWallClock(REAL_TIME)}
-                    title="Animate at the rate the engine actually used, with no time compression"
-                    className={`rounded-[4px] px-1.5 py-0.5 font-mono text-[10.5px] transition ${
-                      wallClock === REAL_TIME ? 'bg-accent text-[#1a1206]' : 'text-ink-faint hover:text-ink'
-                    }`}
-                  >
-                    1:1
-                  </button>
-                </div>
-                {shownSim ? (
-                  flowDone ? (
-                    <Button size="sm" variant="primary" onClick={replayFlow} icon={<RotateCcw size={13} />}>
-                      Replay
-                    </Button>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant={flowPlaying ? 'default' : 'primary'}
-                      onClick={toggleFlow}
-                      icon={flowPlaying ? <Pause size={13} /> : <Play size={13} />}
-                    >
-                      {flowPlaying ? 'Pause' : flowElapsed > 0 ? 'Resume' : 'Play'}
-                    </Button>
-                  )
-                ) : null}
-              </div>
-            }
-          >
-            <ArchitectureFlow
-              arch={arch}
-              components={viewSim?.components}
-              trajectories={shownTrajectories}
-              running={flowPlaying}
-              speed={flowSpeed}
-              durationSec={duration}
-              truncated={Boolean(viewSim?.truncated)}
-              sampleEvery={Number(viewSim?.loggingStats?.sampleEvery) || 1}
-              onComplete={() => setFlowDone(true)}
-              progressBarRef={flowProgress}
-              resetKey={replayKey}
-              readout={flowReadout}
-            />
-            {shownSim ? (
-              <>
-                {reducedMotion ? (
-                  <div className="mt-2.5 flex flex-wrap items-center gap-2 rounded-[7px] border border-line-soft bg-raised px-3 py-2 text-[12px] text-ink-dim">
-                    <Badge tone="dim">reduced motion</Badge>
-                    <span>
-                      Your system asks for reduced motion, so the diagram is held still. Press
-                      Play to animate it anyway, or read the metrics and charts below.
-                    </span>
-                  </div>
-                ) : null}
-
-                {/* Was a 1px sliver with only a static "stops at 60 s" caption, which gave no
-                    sense of position during a 40s animation. */}
-                <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-overlay">
-                  <div
-                    ref={flowProgress}
-                    className="h-full rounded-full bg-accent"
-                    style={{ width: '0%', transition: 'none' }}
-                  />
-                </div>
-                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 font-mono text-[10.5px] text-ink-faint">
-                  <span>{speedLabel(flowSpeed)}</span>
-                  <span aria-live="off">
-                    <span className="text-ink">
-                      {flowDone ? `${duration.toFixed(0)} s` : flowElapsed.toFixed(1)} / {duration.toFixed(0)} s
-                    </span>
-                    {viewSim?.truncated
-                      ? ` · engine stopped early at ${((viewSim.simulatedMs || 0) / 1000).toFixed(0)} s (event budget)`
-                      : ''}
+      {/* ------------------------------------------------------------------ */}
+      {/* Architecture arena: the main attraction. Full width, tall canvas.   */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="mb-5">
+        <Card
+          title="Architecture & live request flow"
+          sub="Particles are sampled requests from the recorded event log, moving along the actual connection curves at their real hop timestamps; streams brighten with measured traffic, queues pile up amber, and event pulses fire only for recorded events. Click a component for its intelligence panel; drag to pan, use the corner controls to zoom, and pick a visual quality with FX."
+          bodyClass="p-4 control-room"
+        >
+          <ArchitectureFlow
+            arch={arch}
+            components={viewSim?.components}
+            trajectories={shownTrajectories}
+            eventLog={shownSim?.eventLog}
+            reducedMotion={reducedMotion}
+            running={flowPlaying}
+            speed={flowSpeed}
+            durationSec={duration}
+            truncated={Boolean(viewSim?.truncated)}
+            sampleEvery={Number(viewSim?.loggingStats?.sampleEvery) || 1}
+            onComplete={() => setFlowDone(true)}
+            progressBarRef={flowProgress}
+            resetKey={replayKey}
+            readout={flowReadout}
+            selectedId={selectedNode}
+            onSelectNode={(id) => setSelectedNode((prev) => (prev === id ? null : id))}
+            bottleneckIds={bottleneckIds}
+            nodeLoadRef={nodeLoadRef}
+            height={520}
+          />
+          {shownSim ? (
+            <>
+              {reducedMotion ? (
+                <div className="mt-2.5 flex flex-wrap items-center gap-2 rounded-[7px] border border-line-soft bg-raised px-3 py-2 text-[12px] text-ink-dim">
+                  <Badge tone="dim">reduced motion</Badge>
+                  <span>
+                    Your system asks for reduced motion, so the diagram is held still. Press
+                    Play to animate it anyway, or read the metrics and charts below.
                   </span>
                 </div>
-                <div className="mt-1 text-[10.5px] text-ink-faint">
-                  Space plays or pauses · R replays
-                </div>
-                <FlowLegend readoutRef={flowReadout} />
-              </>
-            ) : null}
+              ) : null}
+
+              {/* Was a 1px sliver with only a static "stops at 60 s" caption, which gave no
+                  sense of position during a 40s animation. */}
+              <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-overlay">
+                <div
+                  ref={flowProgress}
+                  className="h-full rounded-full bg-accent"
+                  style={{ width: '0%', transition: 'none' }}
+                />
+              </div>
+              <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 font-mono text-[10.5px] text-ink-faint">
+                <span>{speedLabel(flowSpeed)}</span>
+                <span aria-live="off">
+                  <span className="text-ink">
+                    {flowDone ? `${duration.toFixed(0)} s` : flowElapsed.toFixed(1)} / {duration.toFixed(0)} s
+                  </span>
+                  {viewSim?.truncated
+                    ? ` · engine stopped early at ${((viewSim.simulatedMs || 0) / 1000).toFixed(0)} s (event budget)`
+                    : ''}
+                </span>
+              </div>
+              <div className="mt-1 text-[10.5px] text-ink-faint">
+                Space plays or pauses · R replays
+              </div>
+              <FlowLegend readoutRef={flowReadout} />
+            </>
+          ) : null}
+        </Card>
+      </div>
+
+      {/* Controls, intelligence and alerts, then run provenance. */}
+      <div className="mb-5 grid grid-cols-1 items-start gap-5 lg:grid-cols-3">
+        <Card title="Workload" sub="Arrival profile handed to the engine.">
+          <RangeField
+            label="Arrival rate"
+            value={arrivalRate}
+            min={10}
+            max={500}
+            step={5}
+            onChange={(v) => setWorkload({ arrivalRate: v })}
+            format={(v) => `${v} req/s`}
+          />
+          <RangeField
+            label="Duration"
+            value={duration}
+            min={10}
+            max={300}
+            step={5}
+            onChange={(v) => setWorkload({ duration: v })}
+            format={(v) => `${v} s`}
+          />
+          <Field label="Random seed" hint="Same seed plus same architecture reproduces the run exactly.">
+            <input
+              type="number"
+              className={inputClass}
+              value={seed}
+              onChange={(e) => setWorkload({ seed: Number(e.target.value) || 0 })}
+            />
+          </Field>
+
+          <div className="border-t border-line-soft pt-3.5">
+            <div className="mb-1 font-mono text-[11.5px] tracking-wide text-ink-dim uppercase">
+              Report presets
+            </div>
+            <div className="mb-1.5 text-[11px] text-ink-faint">
+              Arrival rate derived from Little&apos;s Law, λ = L / W, with a 200 ms assumed mean
+              latency.
+            </div>
+            <div className="flex flex-col gap-2">
+              {workloadPresets.map((preset) => {
+                const rate = presetRate(preset.concurrentUsers)
+                const on = rate === arrivalRate
+                return (
+                  <Button
+                    key={preset.label}
+                    size="sm"
+                    variant={on ? 'primary' : 'default'}
+                    onClick={() =>
+                      setWorkload({ arrivalRate: rate, concurrentUsers: preset.concurrentUsers })
+                    }
+                    className="w-full justify-between"
+                  >
+                    <span>{preset.label}</span>
+                    <span className="font-mono text-[11px] opacity-70">{rate} req/s</span>
+                  </Button>
+                )
+              })}
+            </div>
+            <div className="mt-2.5 flex flex-wrap items-center gap-2">
+              {activePreset ? (
+                <Badge tone="amber">{activePreset.label}</Badge>
+              ) : (
+                <Badge tone="dim">custom rate</Badge>
+              )}
+              <span className="text-[11px] text-ink-faint">
+                {activePreset
+                  ? `λ = ${activePreset.concurrentUsers} / 0.2 s = ${presetRate(activePreset.concurrentUsers)} req/s`
+                  : 'Between the three report scenarios.'}
+              </span>
+            </div>
+            <div className="mt-2 text-[11px] text-ink-faint">
+              The 10,000-user preset sits above the slider range and is applied directly.
+            </div>
+          </div>
+
+          <div className="mt-4 border-t border-line-soft pt-3.5">
+            <div className="text-[11.5px] text-ink-dim">
+              The run button lives in the command bar above. Nothing runs on its own. That
+              button runs the engine and then animates the result for the duration set above.
+            </div>
+            <div className={`mt-2 font-mono text-[11.5px] ${hintTone}`}>{hint}</div>
+          </div>
+        </Card>
+
+        <div className="space-y-5">
+          <Card
+            title="Component intelligence"
+            sub="Measured behaviour of the selected component. Not-measured rows are left blank on purpose."
+            actions={
+              selectedNode ? (
+                <Button size="sm" variant="ghost" onClick={() => setSelectedNode(null)}>
+                  Clear
+                </Button>
+              ) : null
+            }
+          >
+            <IntelPanel node={selectedArchNode} stat={selectedStat} liveLoad={selectedLiveLoad} />
+          </Card>
+
+          <Card
+            title="Alerts"
+            sub="Raised only by measurements from the run on screen."
+          >
+              <AlertStrip alerts={alerts} pending={!viewSim} />
           </Card>
         </div>
 
         <div className="space-y-5">
-          <Card title="Workload" sub="Arrival profile handed to the engine.">
-            <RangeField
-              label="Arrival rate"
-              value={arrivalRate}
-              min={10}
-              max={500}
-              step={5}
-              onChange={(v) => setWorkload({ arrivalRate: v })}
-              format={(v) => `${v} req/s`}
-            />
-            <RangeField
-              label="Duration"
-              value={duration}
-              min={10}
-              max={300}
-              step={5}
-              onChange={(v) => setWorkload({ duration: v })}
-              format={(v) => `${v} s`}
-            />
-            <Field label="Random seed" hint="Same seed plus same architecture reproduces the run exactly.">
-              <input
-                type="number"
-                className={inputClass}
-                value={seed}
-                onChange={(e) => setWorkload({ seed: Number(e.target.value) || 0 })}
-              />
-            </Field>
-
-            <div className="border-t border-line-soft pt-3.5">
-              <div className="mb-1 font-mono text-[11.5px] tracking-wide text-ink-dim uppercase">
-                Report presets
-              </div>
-              <div className="mb-1.5 text-[11px] text-ink-faint">
-                Arrival rate derived from Little&apos;s Law, λ = L / W, with a 200 ms assumed mean
-                latency.
-              </div>
-              <div className="flex flex-col gap-2">
-                {workloadPresets.map((preset) => {
-                  const rate = presetRate(preset.concurrentUsers)
-                  const on = rate === arrivalRate
-                  return (
-                    <Button
-                      key={preset.label}
-                      size="sm"
-                      variant={on ? 'primary' : 'default'}
-                      onClick={() =>
-                        setWorkload({ arrivalRate: rate, concurrentUsers: preset.concurrentUsers })
-                      }
-                      className="w-full justify-between"
-                    >
-                      <span>{preset.label}</span>
-                      <span className="font-mono text-[11px] opacity-70">{rate} req/s</span>
-                    </Button>
-                  )
-                })}
-              </div>
-              <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                {activePreset ? (
-                  <Badge tone="amber">{activePreset.label}</Badge>
-                ) : (
-                  <Badge tone="dim">custom rate</Badge>
-                )}
-                <span className="text-[11px] text-ink-faint">
-                  {activePreset
-                    ? `λ = ${activePreset.concurrentUsers} / 0.2 s = ${presetRate(activePreset.concurrentUsers)} req/s`
-                    : 'Between the three report scenarios.'}
-                </span>
-              </div>
-              <div className="mt-2 text-[11px] text-ink-faint">
-                The 10,000-user preset sits above the slider range and is applied directly.
-              </div>
-            </div>
-
-            <div className="mt-4 border-t border-line-soft pt-3.5">
-              <Button
-                variant="primary"
-                className="w-full justify-center"
-                onClick={startRun}
-                disabled={isRunning}
-                icon={isRunning ? <SpinnerIcon /> : <Play size={14} />}
-              >
-                {isRunning ? 'Running…' : viewSim ? 'Run Simulation Again' : 'Start Simulation'}
-              </Button>
-              <div className="mt-1 text-[11px] text-ink-faint">
-                Nothing runs on its own. This button runs the engine and then animates the
-                result for the duration set above.
-              </div>
-              <div className={`mt-2 font-mono text-[11.5px] ${hintTone}`}>{hint}</div>
-            </div>
-          </Card>
-
           {/*
             "What the engine used", as opposed to the editable Workload panel above it. Both
             listed arrival rate, duration and seed, which read as a duplicate of the
@@ -899,19 +1081,16 @@ useEffect(() => {
 
           <Card
             title="Event log"
-            sub="Ordered simulation events used as the input to the process mining stage."
+            sub="Ordered simulation events used as the input to the process mining stage. Rows dim beyond the playback head while the replay runs."
             actions={<Badge tone="dim">{Number(logging.loggedEvents || 0).toLocaleString()} logged</Badge>}
           >
             <div className="mb-3 text-[12px] text-ink-faint">
               {Number(logging.loggedEvents || 0).toLocaleString()} events are a deterministic sample of{' '}
               {Number(logging.totalEvents || 0).toLocaleString()} total events, covering{' '}
               {Number(logging.sampledCases || 0).toLocaleString()} of{' '}
-              {Number(logging.totalCases || 0).toLocaleString()} simulated cases. Showing the first{' '}
-              {Math.min(EVENT_ROWS, eventRows.length)} rows.
+              {Number(logging.totalCases || 0).toLocaleString()} simulated cases. Select a row for its full record.
             </div>
-            <div className="max-h-[200px] overflow-auto">
-              <DataTable headers={['Case', 'Activity', 'Component', 't']} rows={eventRows} empty="No events logged yet." />
-            </div>
+            <EventTimeline eventLog={sim?.eventLog || []} headSec={flowPlaying ? flowElapsed : null} />
           </Card>
         </>
       ) : null}

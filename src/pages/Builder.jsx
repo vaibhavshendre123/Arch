@@ -46,7 +46,7 @@ import {
   typesByCategory,
 } from '../data/nodeTypes.js'
 import { archHash, toContract } from '../lib/contract.js'
-import { canSimulate, validateArchitecture } from '../lib/validate.js'
+import { validateArchitecture } from '../lib/validate.js'
 import { Badge, Button, Empty, Field, JsonPreview, PageHead, Spinner, inputClass } from '../components/ui.jsx'
 import { NODE_H, NODE_W, NodeGlyph } from '../components/NodeShapes.jsx'
 import { useApp, useDispatch } from '../store/AppContext.jsx'
@@ -120,8 +120,10 @@ function makeNodeId(type, taken) {
   return id
 }
 
-function simulateHint(arch) {
-  if (canSimulate(arch)) return ''
+function simulateHint(validationResult, arch) {
+  if (validationResult.canSimulate) return ''
+  const firstError = validationResult.errors[0]
+  if (firstError) return firstError.message
   if (!arch.nodes.length) return 'Add at least one component to the canvas.'
   if (!arch.nodes.some((n) => clientTypes.includes(n.type))) {
     return 'Add a User, Web Client or Mobile Client so the architecture has an entry point.'
@@ -465,18 +467,36 @@ function ValidationPanel({ result }) {
         {valid ? <Badge tone="green">pass</Badge> : <Badge tone="red">{`${errors.length} error${errors.length === 1 ? '' : 's'}`}</Badge>}
       </div>
       <div className="p-3">
-        {errors.map((err, i) => (
-          <div key={`err-${i}`} className="mb-1.5 flex gap-1.5 text-[11.5px] text-red">
-            <CircleAlert size={13} className="mt-0.5 shrink-0" />
-            <span>{err}</span>
-          </div>
-        ))}
-        {warnings.map((warn, i) => (
-          <div key={`warn-${i}`} className="mb-1.5 flex gap-1.5 text-[11.5px] text-accent">
-            <TriangleAlert size={13} className="mt-0.5 shrink-0" />
-            <span>{warn}</span>
-          </div>
-        ))}
+        {errors.map((err, i) => {
+          const message = typeof err === 'string' ? err : err.message
+          const suggestion = typeof err === 'object' ? err.suggestion : null
+          return (
+            <div key={`err-${i}`} className="mb-2 last:mb-0">
+              <div className="flex gap-1.5 text-[11.5px] text-red">
+                <CircleAlert size={13} className="mt-0.5 shrink-0" />
+                <span>{message}</span>
+              </div>
+              {suggestion && (
+                <div className="ml-[19px] mt-0.5 text-[11px] text-ink-faint">{suggestion}</div>
+              )}
+            </div>
+          )
+        })}
+        {warnings.map((warn, i) => {
+          const message = typeof warn === 'string' ? warn : warn.message
+          const suggestion = typeof warn === 'object' ? warn.suggestion : null
+          return (
+            <div key={`warn-${i}`} className="mb-2 last:mb-0">
+              <div className="flex gap-1.5 text-[11.5px] text-accent">
+                <TriangleAlert size={13} className="mt-0.5 shrink-0" />
+                <span>{message}</span>
+              </div>
+              {suggestion && (
+                <div className="ml-[19px] mt-0.5 text-[11px] text-ink-faint">{suggestion}</div>
+              )}
+            </div>
+          )
+        })}
         {valid && !warnings.length && (
           <div className="flex items-center gap-1.5 text-[11.5px] text-green">
             <CircleCheck size={13} />
@@ -785,9 +805,9 @@ export default function Builder() {
   useEffect(() => {
     let cancelled = false
 
-    ;(async () => {
-      await refreshVersions(() => cancelled)
-    })()
+      ; (async () => {
+        await refreshVersions(() => cancelled)
+      })()
 
     return () => {
       cancelled = true
@@ -1092,8 +1112,10 @@ export default function Builder() {
 
   const arch = toArch({ nodes, edges })
   const contract = toContract(arch)
-  const simReady = canSimulate(arch)
-  const simHint = simulateHint(arch)
+  // Use the full validation result to gate simulation — the same rules that run
+  // in the worker, so the button state is always truthful.
+  const simReady = result.canSimulate
+  const simHint = simulateHint(result, arch)
   const selectedFlow = nodes.find((n) => n.selected) || null
   const selectedNode = selectedFlow ? fromFlowNode(selectedFlow) : null
 
@@ -1162,9 +1184,8 @@ export default function Builder() {
 
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-panel border border-line-soft bg-surface px-3.5 py-2">
         <div className="font-mono text-[11.5px] text-ink-dim">
-          {`${nodes.length} component${nodes.length === 1 ? '' : 's'} · ${edges.length} connection${
-            edges.length === 1 ? '' : 's'
-          }`}
+          {`${nodes.length} component${nodes.length === 1 ? '' : 's'} · ${edges.length} connection${edges.length === 1 ? '' : 's'
+            }`}
           {result.valid ? (
             <span className="text-green"> · valid</span>
           ) : (

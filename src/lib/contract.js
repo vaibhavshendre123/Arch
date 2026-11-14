@@ -80,14 +80,65 @@ export function terminalNodeIds(architecture) {
   return [...outgoing.entries()].filter(([, kids]) => kids.length === 0).map(([id]) => id)
 }
 
-export function expectedPaths(architecture, maxPaths = 6) {
-  const { nodes, outgoing, incoming } = graphOf(architecture)
-  if (!nodes.length) return []
+/**
+ * Enumerate expected paths by walking the architecture graph from every entry
+ * node (no incoming edges) to every terminal node (no outgoing edges).
+ *
+ * Returns a model with the enumerated paths plus the metadata needed to tell
+ * the user when the enumeration was incomplete (path budget hit) and how the
+ * graph was shaped (multiple entries/terminals, cycles).
+ *
+ * Traversal rules:
+ * - A cycle never re-enters a node already on the current path (depth-safe).
+ * - Each root is walked depth-first; branching produces one path per route.
+ * - Enumeration stops once `maxPaths` complete paths are collected, and the
+ *   model reports `truncated: true` so the UI can say so instead of silently
+ *   presenting a partial model as complete.
+ */
+export function expectedPathModel(architecture, maxPaths = 6) {
+  const limit = Math.max(1, Math.floor(Number(maxPaths) || 6))
+  const { nodes, outgoing, incoming, edges } = graphOf(architecture)
+  if (!nodes.length) {
+    return {
+      paths: [],
+      truncated: false,
+      limit,
+      entryIds: [],
+      terminalIds: [],
+      hasCycles: false,
+      nodeCount: 0,
+      edgeCount: 0,
+    }
+  }
   const starts = nodes.filter((n) => (incoming.get(n.id) || []).length === 0).map((n) => n.id)
   const roots = starts.length ? starts : [nodes[0].id]
+  const terminals = nodes.filter((n) => (outgoing.get(n.id) || []).length === 0).map((n) => n.id)
+  const nameOf = new Map(nodes.map((n) => [n.id, n.name || n.id]))
+
+  // A cycle exists when a node can reach itself; the walk below avoids revisiting
+  // nodes on the active path so enumeration always terminates.
+  const hasCycles = (() => {
+    const state = new Map()
+    const visit = (id) => {
+      if (state.get(id) === 1) return true
+      if (state.get(id) === 2) return false
+      state.set(id, 1)
+      for (const kid of outgoing.get(id) || []) {
+        if (visit(kid)) return true
+      }
+      state.set(id, 2)
+      return false
+    }
+    return roots.some((r) => visit(r))
+  })()
+
   const results = []
+  let truncated = false
   const walk = (id, path) => {
-    if (results.length >= maxPaths) return
+    if (results.length >= limit) {
+      truncated = true
+      return
+    }
     if (path.includes(id)) return
     const next = [...path, id]
     const kids = outgoing.get(id) || []
@@ -95,10 +146,37 @@ export function expectedPaths(architecture, maxPaths = 6) {
       results.push(next)
       return
     }
-    for (const k of kids) walk(k, next)
+    for (const k of kids) {
+      if (results.length >= limit) {
+        truncated = true
+        return
+      }
+      walk(k, next)
+    }
   }
-  for (const r of roots) walk(r, [])
-  return results.map((p) => p.map((id) => ({ id, name: nodes.find((n) => n.id === id)?.name || id })))
+  for (const r of roots) {
+    if (results.length >= limit) {
+      truncated = true
+      break
+    }
+    walk(r, [])
+  }
+
+  return {
+    paths: results.map((p) => p.map((id) => ({ id, name: nameOf.get(id) || id }))),
+    truncated,
+    limit,
+    entryIds: roots,
+    terminalIds: terminals,
+    hasCycles,
+    nodeCount: nodes.length,
+    edgeCount: edges.length,
+  }
+}
+
+/** Backward-compatible wrapper: just the enumerated paths. */
+export function expectedPaths(architecture, maxPaths = 6) {
+  return expectedPathModel(architecture, maxPaths).paths
 }
 
 export function nodeLabel(architecture, id) {

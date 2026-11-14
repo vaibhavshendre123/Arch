@@ -15,7 +15,7 @@ async function openInBuilder(page, projectName) {
   await expect(page).toHaveURL(/\/builder$/)
   // The palette is always present. Nodes are not: a project created from the blank template
   // legitimately starts with an empty canvas.
-  await expect(page.getByText('Component palette')).toBeVisible()
+  await expect(page.getByText('Component palette', { exact: true })).toBeVisible()
 }
 
 /** Component count currently rendered on the canvas. */

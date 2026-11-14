@@ -141,6 +141,9 @@ export function runSimulation(contract, workload, options) {
   const queueHistory = new Map()
   const eventLog = []
   const finishedCaseIds = new Set()
+  // Case ids admitted to the sample by the stride. A subset may never finish before the
+  // event budget stops the run; their partial traces stay in the log (see trim below).
+  const loggedCaseIds = new Set()
 
   let now = 0
   let lastEventTime = 0
@@ -344,6 +347,7 @@ export function runSimulation(contract, workload, options) {
     if (nextCaseId % sampleEvery === 0 && loggedCaseSlots < maxLoggedCases) {
       simCase.logged = true
       loggedCaseSlots += 1
+      loggedCaseIds.add(simCase.id)
     }
     record(simCase, ACTIVITY.ARRIVAL, component, 'success')
     enterNode(simCase, component)
@@ -379,15 +383,22 @@ export function runSimulation(contract, workload, options) {
   failedRequests += inFlight
   inFlight = 0
 
-  const sampledCaseIds = new Set()
+  // Keep every sampled case's events, including cases still in flight when the event
+  // budget stops the run. Dropping them silently hid the very traces the mining report
+  // classifies as INCOMPLETE_TRACE, so the sample showed zero incomplete cases no matter
+  // how much work the budget abandoned. Unsampled in-flight cases still contribute no
+  // events, matching the sampling stride.
+  const retainedCaseIds = new Set()
+  const unfinishedLoggedCaseIds = new Set()
   const trimmedLog = []
   let firstLoggedTs = 0
   let lastLoggedTs = 0
   for (let i = 0; i < eventLog.length; i += 1) {
     const event = eventLog[i]
-    if (!finishedCaseIds.has(event.caseId)) continue
+    if (!finishedCaseIds.has(event.caseId) && !loggedCaseIds.has(event.caseId)) continue
     event.eventId = trimmedLog.length + 1
-    sampledCaseIds.add(event.caseId)
+    retainedCaseIds.add(event.caseId)
+    if (!finishedCaseIds.has(event.caseId)) unfinishedLoggedCaseIds.add(event.caseId)
     if (!trimmedLog.length) firstLoggedTs = event.timestamp
     lastLoggedTs = event.timestamp
     trimmedLog.push(event)
@@ -489,7 +500,10 @@ const simulatedMs = round(simulatedRaw, 3)
     loggingStats: {
       totalEvents: totalActivities,
       loggedEvents: trimmedLog.length,
-      sampledCases: sampledCaseIds.size,
+      sampledCases: retainedCaseIds.size,
+      // Sampled cases still in flight when the event budget stopped the run. Their
+      // partial traces stay in the log and surface as incomplete traces in mining.
+      unfinishedSampledCases: unfinishedLoggedCaseIds.size,
       totalCases: totalRequests,
       // Every logged case comes from the same deterministic stride, so the sample is an
       // even systematic sample of the run rather than a prefix of it.

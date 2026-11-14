@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useApp, useDispatch } from './AppContext.jsx'
 import { archHash, toContract } from '../lib/contract.js'
 import { emitNotification } from './notificationSink.js'
+import { validateArchitecture } from '../lib/validate.js'
 
 // The worker is module-scoped and deliberately outlives any single page. Previously
 // it was terminated on unmount, which silently discarded an in-flight run whenever
@@ -119,6 +120,26 @@ export function useResults(architecture, options = {}) {
   const run = useCallback(
     (targetKey) => {
       if (!architecture) return
+
+      // -----------------------------------------------------------------------
+      // Frontend validation guard.
+      //
+      // The worker also validates independently, but catching the problem here
+      // avoids ever spinning up the worker for an invalid architecture and
+      // provides an immediate, clear error message to the user.
+      // -----------------------------------------------------------------------
+      const validation = validateArchitecture(architecture)
+      if (!validation.canSimulate) {
+        const firstError = validation.errors[0]
+        const message =
+          firstError?.message ||
+          'The architecture has validation errors. Fix them in the Architecture Builder before simulating.'
+        setError(message)
+        setStatus('error')
+        setSharedStatus('error', message)
+        return
+      }
+
       const k = targetKey || resultKey(architecture, workload)
       setStatus('running')
       setError(null)
@@ -138,14 +159,23 @@ export function useResults(architecture, options = {}) {
         import('../lib/engine.js')
           .then(({ runSimulation }) => runSimulation(payload.architecture, payload.workload, payload.options))
           .then(async (sim) => {
-            const [{ mineEventLog, miningOptions }, { evaluateArchitecture }, { buildRecommendations }] =
+            const [{ mineEventLog, miningOptions, miningProvenance }, { evaluateArchitecture }, { buildRecommendations }] =
               await Promise.all([
                 import('../lib/mining.js'),
                 import('../lib/evaluation.js'),
                 import('../lib/recommendations.js'),
               ])
             const contract = toContract(payload.architecture)
-            const mining = mineEventLog(sim.eventLog, contract, miningOptions(sim))
+            const hash = archHash(payload.architecture)
+            const mining = mineEventLog(sim.eventLog, contract, {
+              ...miningOptions(sim),
+              provenance: miningProvenance(sim, contract, {
+                archHash: hash,
+                seed: payload.workload.seed,
+                arrivalRate: payload.workload.arrivalRate,
+                duration: payload.workload.duration,
+              }),
+            })
             const evaluation = evaluateArchitecture(contract, sim, mining)
             const recommendations = buildRecommendations(contract, sim, mining, evaluation)
             dispatch({ type: 'CACHE_RESULT', key: k, value: { sim, mining, evaluation, recommendations } })

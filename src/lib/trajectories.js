@@ -67,8 +67,12 @@ export function buildTrajectories(eventLog, options = {}) {
         continue
       }
 
-      if (event.activity === EXIT && open && open.id === id && open.exit === open.enter) {
-        open.exit = event.timestamp
+      if (event.activity === EXIT && open && open.id === id) {
+        // The moment service actually began. Everything before it inside this hop is
+        // queue residence; everything after it is processing. Recorded separately so the
+        // renderer can show waiting and processing as different states without guessing.
+        if (open.waitExit == null) open.waitExit = event.timestamp
+        if (open.exit === open.enter) open.exit = event.timestamp
         continue
       }
 
@@ -79,12 +83,13 @@ export function buildTrajectories(eventLog, options = {}) {
 
     // Outcome follows the terminal event, not the presence of a failure. A request that
     // failed once and then retried through to REQUEST_COMPLETE succeeded, and colouring it
-    // as a failure would misreport how often the design actually breaks.
+    // as a failure would misreport how often the design actually breaks. A trace with no
+    // terminal event at all is the engine's "failed" bucket: either a permanent failure or
+    // a case still in flight when the event budget stopped the run.
     let outcome
     if (sawDropped) outcome = 'dropped'
     else if (sawComplete) outcome = failures > 0 ? 'retried' : 'completed'
-    else if (failures > 0) outcome = 'failed'
-    else outcome = 'completed'
+    else outcome = 'failed'
 
     const start = hops[0].enter
     const end = hops[hops.length - 1].exit
@@ -112,7 +117,18 @@ export function locateAt(trajectory, t) {
     const hop = hops[i]
     const span = Math.max(hop.exit - hop.enter, 0)
     if (t >= hop.enter && t <= hop.exit) {
-      return { kind: 'service', index: i, nodeId: hop.id, progress: span ? (t - hop.enter) / span : 1 }
+      // `phase` splits the hop at the recorded QUEUE_EXIT: before it the request is
+      // waiting in line, from it onward the component is processing. A hop that never
+      // recorded a QUEUE_EXIT never entered service (it was dropped or failed while
+      // queued), so it counts as waiting for its whole span.
+      const waiting = hop.waitExit == null || t < hop.waitExit
+      return {
+        kind: 'service',
+        index: i,
+        nodeId: hop.id,
+        progress: span ? (t - hop.enter) / span : 1,
+        phase: waiting ? 'waiting' : 'processing',
+      }
     }
     const next = hops[i + 1]
     if (next && t > hop.exit && t < next.enter) {

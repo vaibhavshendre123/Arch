@@ -1,4 +1,4 @@
-import { expectedPaths } from './contract.js'
+import { expectedPathModel } from './contract.js'
 
 const QUEUE_ENTER = 'QUEUE_ENTER'
 const QUEUE_EXIT = 'QUEUE_EXIT'
@@ -17,11 +17,30 @@ const DEFAULTS = {
   maxFrequentPaths: 8,
   maxBottlenecks: 8,
   maxExpectedPaths: 6,
+  maxAffectedCaseIds: 25,
+}
+
+// Deviation classification:
+// - `trace`      : the executed activity sequence deviates from the expected
+//                  model. These are the findings that make a case non-conforming.
+// - `reliability`: a failure, retry or queueing episode was observed, but the
+//                  trace itself still walked an expected path when it finished.
+//                  These do NOT reduce conformance — a recovered retry is a
+//                  reliability signal, not a process-shape violation.
+const DEVIATION_CATEGORY = {
+  FAILURE: 'reliability',
+  RETRY: 'reliability',
+  QUEUEING: 'reliability',
+  UNEXPECTED_COMPONENT: 'trace',
+  SKIPPED_COMPONENT: 'trace',
+  DROPPED: 'trace',
+  INCOMPLETE_TRACE: 'trace',
 }
 
 const DEVIATION_SEVERITY = {
   FAILURE: 'high',
   DROPPED: 'high',
+  INCOMPLETE_TRACE: 'high',
   RETRY: 'med',
   QUEUEING: 'med',
   UNEXPECTED_COMPONENT: 'med',
@@ -40,14 +59,17 @@ const ms1 = (v) => Math.round(v * 10) / 10
 const pct1 = (v) => Math.round(v * 1000) / 10
 const name = (v, fallback = 'Unknown') => (v ? String(v) : fallback)
 
+export const CONFORMANCE_FORMULA =
+  'conformanceRate = conformingCases / totalCases, where a case conforms only if it completed (REQUEST_COMPLETE), was never dropped, and its ordered activity sequence exactly matches one of the expected paths enumerated from the architecture graph. Dropped, failed (incomplete) and path-mismatched cases are all non-conforming. Reliability findings (failures, retries, queueing) inside a case that still completed an expected path do not reduce conformance.'
+
 function contractPaths(contract, maxPaths) {
-  let raw = []
+  let model = null
   try {
-    raw = expectedPaths(contract, maxPaths) || []
+    model = expectedPathModel(contract, maxPaths)
   } catch {
-    raw = []
+    model = null
   }
-  const paths = (Array.isArray(raw) ? raw : []).map((p) => {
+  const paths = (model?.paths || []).map((p) => {
     const steps = Array.isArray(p) ? p : []
     return steps.map((s) => {
       if (s && typeof s === 'object') {
@@ -62,6 +84,11 @@ function contractPaths(contract, maxPaths) {
     names: paths.map((s) => s.map((x) => x.name)),
     idSets: paths.map((s) => new Set(s.map((x) => x.id).filter(Boolean))),
     allIds: new Set(paths.flatMap((s) => s.map((x) => x.id).filter(Boolean))),
+    truncated: Boolean(model?.truncated),
+    limit: model?.limit ?? maxPaths,
+    entryIds: Array.isArray(model?.entryIds) ? model.entryIds.map(String) : [],
+    terminalIds: Array.isArray(model?.terminalIds) ? model.terminalIds.map(String) : [],
+    hasCycles: Boolean(model?.hasCycles),
   }
 }
 
@@ -82,19 +109,33 @@ function contractEdges(contract) {
 function normaliseEvents(eventLog) {
   const list = Array.isArray(eventLog) ? eventLog : []
   const out = []
+  const seen = new Set()
   for (let i = 0; i < list.length; i += 1) {
     const e = list[i]
     if (!e || typeof e !== 'object') continue
-    const ts = Number(e.timestamp)
+    const tsRaw = Number(e.timestamp)
+    const ts = Number.isFinite(tsRaw) ? tsRaw : 0
+    const caseId = e.caseId == null || e.caseId === '' ? 'case-0' : String(e.caseId)
+    const activity = e.activity == null ? '' : String(e.activity)
+    const componentId = e.componentId == null ? '' : String(e.componentId)
+    // Collapse exact duplicates (same case, activity, component and timestamp)
+    // that a re-emitted or replayed log can contain. Order is preserved so a
+    // legitimate A-then-A sequence at different timestamps survives.
+    const dedupeKey = `${caseId}|${activity}|${componentId}|${ts}`
+    if (seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
     out.push({
       order: i,
-      caseId: e.caseId == null || e.caseId === '' ? 'case-0' : String(e.caseId),
-      activity: e.activity == null ? '' : String(e.activity),
-      componentId: e.componentId == null ? '' : String(e.componentId),
+      caseId,
+      activity,
+      componentId,
       componentName: e.componentName == null ? '' : String(e.componentName),
-      timestamp: Number.isFinite(ts) ? ts : 0,
+      timestamp: ts,
+      status: e.status == null ? '' : String(e.status),
     })
   }
+  // Stable sort: timestamp first, original order as tie-break. Missing timestamps
+  // were coerced to 0 above and keep their relative order via `order`.
   return out.sort((a, b) => a.timestamp - b.timestamp || a.order - b.order)
 }
 
@@ -106,7 +147,7 @@ function groupCases(events) {
   }
   return [...groups.entries()]
     .map(([caseId, list]) => ({ caseId, events: list }))
-    .sort((a, b) => a.caseId.localeCompare(b.caseId))
+    .sort((a, b) => a.caseId.localeCompare(b.caseId, undefined, { numeric: true }))
 }
 
 function readCase(c) {
@@ -127,6 +168,8 @@ function readCase(c) {
   let completed = false
   let dropped = false
   let droppedAt = ''
+  let firstTs = null
+  let lastTs = null
 
   const push = (e) => {
     if (!e.componentName) return
@@ -154,6 +197,8 @@ function readCase(c) {
   }
 
   for (const e of c.events) {
+    if (firstTs == null) firstTs = e.timestamp
+    lastTs = e.timestamp
     if (e.activity === REQUEST_COMPLETE) {
       completed = true
       push(e)
@@ -229,6 +274,11 @@ function readCase(c) {
   path.push(...steps.map((s) => s.name))
   idPath.push(...steps.map((s) => s.id).filter(Boolean))
 
+  // A case with no terminal event (no REQUEST_COMPLETE and no REQUEST_DROPPED)
+  // is incomplete: the engine stopped following it (budget exhausted mid-flight)
+  // or it failed past its retry limit without a drop record.
+  const incomplete = !completed && !dropped
+
   return {
     caseId: c.caseId,
     eventCount: c.events.length,
@@ -245,6 +295,8 @@ function readCase(c) {
     completed,
     dropped,
     droppedAt,
+    incomplete,
+    durationMs: firstTs != null && lastTs != null ? Math.max(0, lastTs - firstTs) : 0,
   }
 }
 
@@ -279,10 +331,20 @@ function bestExpectedIndex(model, record) {
 function deviationGroup(store, type, key, component, record) {
   const id = `${type}|${key}`
   if (!store.has(id)) {
-    store.set(id, { type, key, component, cases: new Set(), events: 0, wait: 0, hops: new Map() })
+    store.set(id, {
+      type,
+      key,
+      component,
+      cases: new Set(),
+      caseIds: [],
+      events: 0,
+      wait: 0,
+      hops: new Map(),
+    })
   }
   const group = store.get(id)
   group.cases.add(record.caseId)
+  if (group.caseIds.length < DEFAULTS.maxAffectedCaseIds) group.caseIds.push(record.caseId)
   return group
 }
 
@@ -291,6 +353,8 @@ function collectDeviations(records, model, edges, options) {
   for (const record of records) {
     const expectedIndex = bestExpectedIndex(model, record)
     const expectedNames = expectedIndex >= 0 ? model.names[expectedIndex] || [] : []
+    const pathMatches =
+      expectedIndex >= 0 && variantKey(record.path) === variantKey(model.names[expectedIndex] || [])
 
     for (const q of record.queues) {
       if (q.wait < options.queueDeviationMs) continue
@@ -324,7 +388,7 @@ function collectDeviations(records, model, edges, options) {
     }
 
     const seenNames = new Set(record.path)
-    if (expectedNames.length && !record.dropped) {
+    if (expectedNames.length && !record.dropped && !record.incomplete) {
       for (const missing of expectedNames) {
         if (missing && !seenNames.has(missing)) {
           const group = deviationGroup(store, 'SKIPPED_COMPONENT', missing, missing, record)
@@ -338,9 +402,33 @@ function collectDeviations(records, model, edges, options) {
       const group = deviationGroup(store, 'DROPPED', key, name(record.droppedAt, 'Entry point'), record)
       group.events += 1
     }
+
+    // Incomplete traces (failed past retry limit, or abandoned by the engine
+    // budget) never reached a terminal event. They are trace deviations because
+    // the observed sequence cannot be certified as an expected path.
+    if (record.incomplete && record.path.length > 0) {
+      const lastStep = record.path[record.path.length - 1]
+      const group = deviationGroup(store, 'INCOMPLETE_TRACE', lastStep || 'unknown', name(lastStep, 'unknown'), record)
+      group.events += 1
+      group.expectedIndex = expectedIndex
+    }
+
+    // A completed case whose collapsed path does not match any expected path is
+    // a shape deviation even if no single component is "unexpected" in isolation
+    // (e.g. the right components in the wrong order, or a subset).
+    if (record.completed && !pathMatches && model.names.length) {
+      const expected = expectedIndex >= 0 ? model.names[expectedIndex] : []
+      const group = deviationGroup(store, 'PATH_MISMATCH', record.path.join(' > ') || EMPTY_VARIANT, record.path.join(' > ') || EMPTY_VARIANT, record)
+      group.events += 1
+      group.expectedPath = expected
+      group.observedPath = record.path.slice()
+    }
   }
   return store
 }
+
+DEVIATION_CATEGORY.PATH_MISMATCH = 'trace'
+DEVIATION_SEVERITY.PATH_MISMATCH = 'med'
 
 function deviationDetail(group, totalCases) {
   const pct = pct1(share(group.cases.size, totalCases))
@@ -351,19 +439,26 @@ function deviationDetail(group, totalCases) {
     return `${label} queued work on the direct ${hop} hop in ${group.cases.size} of ${totalCases} cases (${pct}%), averaging ${ms1(group.wait / Math.max(1, group.events))} ms of wait across ${group.events} queueing episodes.`
   }
   if (group.type === 'RETRY') {
-    return `${label} retried in ${group.cases.size} of ${totalCases} cases (${pct}%), logging ${group.events} retry events.`
+    return `${label} retried in ${group.cases.size} of ${totalCases} cases (${pct}%), logging ${group.events} retry events. Retries that still completed an expected path do not reduce conformance.`
   }
   if (group.type === 'FAILURE') {
-    return `${label} failed in ${group.cases.size} of ${totalCases} cases (${pct}%), logging ${group.events} failure events.`
+    return `${label} failed in ${group.cases.size} of ${totalCases} cases (${pct}%), logging ${group.events} failure events. A failure that recovered via retry still conforms if the trace finished an expected path.`
   }
   if (group.type === 'UNEXPECTED_COMPONENT') {
-    return `${label} appears on no expected path yet ${group.cases.size} of ${totalCases} cases (${pct}%) visited it ${group.events} times.`
+    return `${label} appears on no expected path yet ${group.cases.size} of ${totalCases} cases (${pct}%) visited it ${group.events} times. This is a trace deviation and reduces conformance for those cases.`
   }
   if (group.type === 'SKIPPED_COMPONENT') {
-    return `${label} is on the expected path but was skipped by ${group.cases.size} of ${totalCases} cases (${pct}%).`
+    return `${label} is on the expected path but was skipped by ${group.cases.size} of ${totalCases} cases (${pct}%). This is a trace deviation and reduces conformance for those cases.`
   }
   if (group.type === 'DROPPED') {
-    return `${group.cases.size} of ${totalCases} cases (${pct}%) were dropped before completion${label === 'Entry point' ? '' : ` at ${label}`}.`
+    return `${group.cases.size} of ${totalCases} cases (${pct}%) were dropped before completion${label === 'Entry point' ? '' : ` at ${label}`}. Dropped cases are non-conforming.`
+  }
+  if (group.type === 'INCOMPLETE_TRACE') {
+    return `${group.cases.size} of ${totalCases} cases (${pct}%) stopped after ${label} without a completion or drop event, so their traces cannot be certified against the expected model. Incomplete traces are non-conforming.`
+  }
+  if (group.type === 'PATH_MISMATCH') {
+    const expected = Array.isArray(group.expectedPath) && group.expectedPath.length ? group.expectedPath.join(' → ') : 'an expected path'
+    return `${group.cases.size} of ${totalCases} cases (${pct}%) completed with the sequence "${group.component}" which does not match ${expected}. This is a trace deviation and reduces conformance for those cases.`
   }
   return `${label} deviated in ${group.cases.size} of ${totalCases} cases (${pct}%).`
 }
@@ -374,17 +469,37 @@ function rankDeviations(store, totalCases) {
     const order = PAIR.indexOf(base) >= 0 ? PAIR : SINGLE
     const shareValue = share(group.cases.size, totalCases)
     const severity = shareValue >= ESCALATE_SHARE ? order[order.length - 1] : base
+    const category = DEVIATION_CATEGORY[group.type] || 'reliability'
     return {
       type: group.type,
+      category,
       component: group.component,
       detail: deviationDetail(group, totalCases),
       severity,
       caseCount: group.cases.size,
+      caseIds: group.caseIds.slice(0, DEFAULTS.maxAffectedCaseIds),
+      expectedActivity:
+        group.type === 'SKIPPED_COMPONENT'
+          ? group.component
+          : group.type === 'PATH_MISMATCH' || group.type === 'INCOMPLETE_TRACE'
+            ? Array.isArray(group.expectedPath) && group.expectedPath.length
+              ? group.expectedPath.join(' → ')
+              : 'an expected path'
+            : undefined,
+      observedActivity:
+        group.type === 'PATH_MISMATCH'
+          ? Array.isArray(group.observedPath)
+            ? group.observedPath.join(' → ')
+            : group.component
+          : group.type === 'DROPPED' || group.type === 'INCOMPLETE_TRACE'
+            ? group.component
+            : undefined,
     }
   })
   const weight = { high: 0, med: 1, low: 2 }
   return list.sort(
     (a, b) =>
+      (a.category === b.category ? 0 : a.category === 'trace' ? -1 : 1) ||
       weight[a.severity] - weight[b.severity] ||
       b.caseCount - a.caseCount ||
       a.type.localeCompare(b.type) ||
@@ -399,13 +514,10 @@ function severityFor(waitRatio, utilisation) {
 }
 
 function bottleneckNote(component, stats) {
-  const wait = ms1(stats.avgWait)
-  const proc = ms1(stats.avgProcessing)
-  const ratio = round3(stats.waitRatio)
   const util = stats.derived
     ? `, with a peak queue of ${stats.queueDepthMax}; utilisation is unavailable because it cannot be recovered from an event log prefix`
     : ` and a peak queue of ${stats.queueDepthMax}, at ${pct1(stats.utilisation)}% supplied utilisation`
-  return `${component} makes requests wait ${wait} ms on average against ${proc} ms of processing, a wait ratio of ${ratio}x over ${stats.visits} visits${util}.`
+  return `${component} makes requests wait ${stats.waitingMs} ms on average against ${stats.processingMs} ms of processing, a wait ratio of ${stats.waitRatio}x over ${stats.visits} visits${util}.`
 }
 
 function buildBottlenecks(records, options) {
@@ -441,7 +553,11 @@ function buildBottlenecks(records, options) {
     const avgWait = wait.total / wait.count
     if (avgWait < options.minWaitMs) continue
     const avgProcessing = (procs.get(key) || 0) / Math.max(1, visitsCount)
-    const waitRatio = avgWait / Math.max(avgProcessing, 1)
+    // Compute the ratio from the same 1-decimal values the UI displays, so a reader can
+    // verify "1932.4 ms / 30.0 ms = 64.41x" without hitting a rounding mismatch.
+    const waitingMs = ms1(avgWait)
+    const processingMs = ms1(avgProcessing)
+    const waitRatio = round3(waitingMs / Math.max(processingMs, 1))
     const componentId = ids.get(key) || key
     const measured = supplied ? supplied[componentId] ?? supplied[key] : undefined
     const utilisation = clamp(measured != null ? Number(measured) : 0, 0, 1)
@@ -452,6 +568,8 @@ function buildBottlenecks(records, options) {
       avgWait,
       avgProcessing,
       waitRatio,
+      waitingMs,
+      processingMs,
       // The engine's queueLengthMax is the true depth. A per-case reconstruction
       // can only ever see 0 or 1, because QUEUE_ENTER and QUEUE_EXIT are logged
       // at the same instant whenever a server slot is already free.
@@ -463,9 +581,9 @@ function buildBottlenecks(records, options) {
     list.push({
       componentId,
       component: key,
-      waitingMs: ms1(avgWait),
-      processingMs: ms1(avgProcessing),
-      waitRatio: round3(waitRatio),
+      waitingMs,
+      processingMs,
+      waitRatio,
       queueDepthMax: stats.queueDepthMax,
       visits: visitsCount,
       severity: severityFor(waitRatio, utilisation),
@@ -493,7 +611,8 @@ function variantKey(path) {
 // and the miner can rank bottlenecks on real evidence.
 export function miningOptions(sim) {
   const components = sim?.components && typeof sim.components === 'object' ? sim.components : null
-  if (!components) return {}
+  const options = {}
+  if (!components) return options
   const utilization = {}
   const queueDepth = {}
   for (const [id, c] of Object.entries(components)) {
@@ -503,7 +622,57 @@ export function miningOptions(sim) {
     const depth = Number(c.queueLengthMax)
     queueDepth[id] = Number.isFinite(depth) ? depth : 0
   }
-  return { utilization, queueDepth }
+  options.utilization = utilization
+  options.queueDepth = queueDepth
+  return options
+}
+
+/**
+ * Build the provenance record that ties a mining result to the exact simulation
+ * run and architecture version that produced its event log. Two runs that differ
+ * in architecture hash, seed, arrival rate or duration must never be mixed.
+ */
+export function miningProvenance(sim, contract, extra = {}) {
+  const hash = typeof extra.archHash === 'string' && extra.archHash ? extra.archHash : null
+  const seed = sim?.seed ?? extra.seed ?? null
+  const arrivalRate = sim?.arrivalRate ?? extra.arrivalRate ?? null
+  const duration = sim?.duration ?? extra.duration ?? null
+  const runKey = hash ? `${hash}::rate-${arrivalRate}::dur-${duration}::seed-${seed}` : null
+  return {
+    archHash: hash,
+    seed,
+    arrivalRate,
+    duration,
+    runKey,
+    totalRequests: sim?.metrics?.totalRequests ?? null,
+    sampledCases: sim?.loggingStats?.sampledCases ?? null,
+    sampleEvery: sim?.loggingStats?.sampleEvery ?? null,
+    // The event budget can cut a run short of its requested duration. Surfacing both
+    // numbers keeps a truncated run from reading as a full one.
+    simulatedMs: sim?.simulatedMs ?? null,
+    truncated: Boolean(sim?.truncated),
+    unfinishedSampledCases: sim?.loggingStats?.unfinishedSampledCases ?? null,
+    generatedAt: Date.now(),
+  }
+}
+
+function unavailableStatistics(extra = {}) {
+  return {
+    available: false,
+    totalCases: 0,
+    completedCases: 0,
+    droppedCases: 0,
+    failedCases: 0,
+    incompleteCases: 0,
+    conformingCases: 0,
+    nonConformingCases: 0,
+    avgCaseLength: 0,
+    variants: 0,
+    conformanceRate: null,
+    maxWaitMs: 0,
+    loggedCases: 0,
+    totalRequests: extra.totalRequests ?? null,
+  }
 }
 
 export function mineEventLog(eventLog, contract, options) {
@@ -512,11 +681,57 @@ export function mineEventLog(eventLog, contract, options) {
   const cases = groupCases(events).map(readCase)
   const model = contractPaths(contract, opts.maxExpectedPaths)
   const edges = contractEdges(contract)
+  const provenance = opts.provenance && typeof opts.provenance === 'object' ? opts.provenance : null
 
   const totalCases = cases.length
   const completedCases = cases.filter((c) => c.completed && !c.dropped).length
   const droppedCases = cases.filter((c) => c.dropped).length
+  const incompleteCases = cases.filter((c) => c.incomplete).length
+  const failedCases = incompleteCases
   const loggedCases = cases.filter((c) => c.eventCount > 0).length
+
+  // Empty or missing log: report an explicit unavailable state rather than
+  // fabricating 100% conformance or zero-value metrics.
+  if (totalCases === 0) {
+    return {
+      frequentPaths: [],
+      variants: [],
+      bottlenecks: [],
+      deviations: [],
+      traceDeviations: [],
+      reliabilityFindings: [],
+      waitingTimes: {},
+      caseSummaries: [],
+      statistics: unavailableStatistics({ totalRequests: provenance?.totalRequests }),
+      expectedPaths: [],
+      expectedPathMeta: {
+        truncated: model.truncated,
+        limit: model.limit,
+        entryCount: model.entryIds.length,
+        terminalCount: model.terminalIds.length,
+        hasCycles: model.hasCycles,
+      },
+      conformanceFormula: CONFORMANCE_FORMULA,
+      provenance,
+    }
+  }
+
+  const conformKeys = new Set()
+  for (const i of model.names) conformKeys.add(variantKey(i))
+
+  // Conformance (fitness): a case conforms only when it completed, was never
+  // dropped, and its ordered activity sequence exactly matches an expected path.
+  // Dropped and incomplete (failed) cases are non-conforming — they are counted
+  // in the denominator so a run where half the sampled requests died cannot
+  // still report 100% conformance.
+  let conformingCases = 0
+  const caseConform = new Map()
+  for (const record of cases) {
+    const conforms = record.completed && !record.dropped && conformKeys.has(variantKey(record.path))
+    caseConform.set(record.caseId, conforms)
+    if (conforms) conformingCases += 1
+  }
+  const nonConformingCases = totalCases - conformingCases
 
   const buckets = new Map()
   for (const record of cases) {
@@ -528,16 +743,12 @@ export function mineEventLog(eventLog, contract, options) {
   }
 
   const rawVariants = [...buckets.values()]
-  const conformKeys = new Set()
-  for (const i of model.names) conformKeys.add(variantKey(i))
-
-  let conformHits = 0
-  for (const record of cases) {
-    if (record.completed && !record.dropped && conformKeys.has(variantKey(record.path))) conformHits += 1
-  }
 
   const deviationStore = collectDeviations(cases, model, edges, opts)
   const deviations = rankDeviations(deviationStore, totalCases)
+  const traceDeviations = deviations.filter((d) => d.category === 'trace')
+  const reliabilityFindings = deviations.filter((d) => d.category === 'reliability')
+
   const affected = new Map()
   for (const record of cases) {
     const key = variantKey(record.path) || EMPTY_VARIANT
@@ -583,22 +794,61 @@ export function mineEventLog(eventLog, contract, options) {
   const expectedNames = model.names.map((steps) => steps.slice())
   const totalLength = cases.reduce((sum, c) => sum + c.path.length, 0)
 
+  // Per-case summaries power the deviation drill-down and trace inspector. Event
+  // timelines stay in sim.eventLog; duplicating them here would double memory.
+  const caseSummaries = cases.map((record) => {
+    const deviationTypes = []
+    for (const group of deviationStore.values()) {
+      if (group.cases.has(record.caseId)) deviationTypes.push(group.type)
+    }
+    return {
+      caseId: record.caseId,
+      outcome: record.completed ? 'completed' : record.dropped ? 'dropped' : 'incomplete',
+      path: record.path.slice(),
+      activityCount: record.path.length,
+      eventCount: record.eventCount,
+      durationMs: ms1(record.durationMs),
+      conforms: Boolean(caseConform.get(record.caseId)),
+      deviationTypes: deviationTypes.sort(),
+    }
+  })
+
   return {
     frequentPaths,
     variants,
     bottlenecks,
     deviations,
+    traceDeviations,
+    reliabilityFindings,
     waitingTimes,
+    caseSummaries,
     statistics: {
+      available: true,
       totalCases,
       completedCases,
       droppedCases,
+      failedCases,
+      incompleteCases,
+      conformingCases,
+      nonConformingCases,
       avgCaseLength: round3(share(totalLength, totalCases)),
       variants: rawVariants.length,
-      conformanceRate: round3(share(conformHits, completedCases)),
+      // null (not 0) when nothing can be assessed, so the UI shows an
+      // unavailable state instead of a fabricated percentage.
+      conformanceRate: totalCases > 0 ? round3(share(conformingCases, totalCases)) : null,
       maxWaitMs: ms1(maxWaitMs),
       loggedCases,
+      totalRequests: provenance?.totalRequests ?? null,
     },
     expectedPaths: expectedNames,
+    expectedPathMeta: {
+      truncated: model.truncated,
+      limit: model.limit,
+      entryCount: model.entryIds.length,
+      terminalCount: model.terminalIds.length,
+      hasCycles: model.hasCycles,
+    },
+    conformanceFormula: CONFORMANCE_FORMULA,
+    provenance,
   }
 }
