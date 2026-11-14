@@ -21,6 +21,27 @@ export const defaultSettings = {
   email: '',
 }
 
+// How many full simulation results are kept in memory. Each entry holds an event log, which
+// is the large part of a run, so this is deliberately small: enough to move between a
+// project and its previous architecture without recomputing, not enough to retain every run
+// of a long session. The persisted summaries are capped separately in lib/simSummary.js.
+export const SIM_CACHE_LIMIT = 6
+
+function cacheResult(cache, key, value) {
+  // Delete-then-write so an overwritten key moves to the end of the insertion order.
+  // Without the delete an overwrite keeps its original position, and eviction would then
+  // drop the entry that was just used instead of the oldest one.
+  const next = { ...cache }
+  delete next[key]
+  next[key] = value
+  const keys = Object.keys(next)
+  if (keys.length <= SIM_CACHE_LIMIT) return next
+
+  const trimmed = {}
+  for (const k of keys.slice(keys.length - SIM_CACHE_LIMIT)) trimmed[k] = next[k]
+  return trimmed
+}
+
 export const initialState = {
   // `checked` records that the stored token has already been verified. Auth itself is not
   // persisted, so after a reload `user` is null while a perfectly valid token is still in
@@ -244,7 +265,7 @@ role: action.role || 'student',
     case 'SET_WORKLOAD':
       return { ...state, workload: { ...state.workload, ...action.workload } }
     case 'CACHE_RESULT':
-      return { ...state, simCache: { ...state.simCache, [action.key]: action.value } }
+      return { ...state, simCache: cacheResult(state.simCache, action.key, action.value) }
     case 'CLEAR_CACHE':
       return { ...state, simCache: {} }
 

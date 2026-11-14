@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { before, describe, it } from 'node:test'
 
-import { BASE, PASSWORD, archWith, serverAvailable, withTwoAccounts } from './harness.mjs'
+import { BASE, PASSWORD, archWith, connect, serverAvailable, withTwoAccounts } from './harness.mjs'
+import ArchitectureVersion from '../../backend/src/models/ArchitectureVersion.model.js'
 
 const online = await serverAvailable()
 const SKIP_REASON = `no test instance reachable at ${BASE} — run npm run test:integration`
@@ -215,5 +216,24 @@ describe('delete', opts, () => {
     const created = (await a.createProject({ name: 'Delete Twice', arch: archWith('Y') })).json.data.project
     assert.equal((await a.deleteProject(created.id)).status, 200)
     assert.equal((await a.deleteProject(created.id)).status, 404)
+  })
+
+  it('removes the project version history with the project', async () => {
+    const created = (await a.createProject({ name: 'Has History', arch: archWith('History') })).json.data.project
+    assert.equal((await a.createVersion(created.id, { label: 'v1', arch: archWith('Snapshot') })).status, 201)
+
+    await connect()
+    assert.ok(
+      (await ArchitectureVersion.countDocuments({ project: created.id })) >= 1,
+      'the fixture must actually have a version before the cascade is meaningful',
+    )
+
+    assert.equal((await a.deleteProject(created.id)).status, 200)
+
+    assert.equal(
+      await ArchitectureVersion.countDocuments({ project: created.id }),
+      0,
+      'deleting a project must not leave its versions behind as orphans',
+    )
   })
 })

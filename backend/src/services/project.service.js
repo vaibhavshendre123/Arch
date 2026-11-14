@@ -1,29 +1,13 @@
 import { ApiError } from '../middleware/errorHandler.js'
+import { assertArchitecture } from '../models/architecture.schema.js'
+import ArchitectureVersion from '../models/ArchitectureVersion.model.js'
 import Project from '../models/Project.model.js'
 
-const MAX_NODE_ID = 120
-const MAX_EDGE_ID = 120
-
+// Projects and versions both go through the same validator, so a version snapshot and a
+// live project cannot disagree about what a legal architecture is. The previous private
+// copy here only checked ids and references, which let unvalidated parameters through.
 function assertArch(arch) {
-  if (!arch || typeof arch !== 'object') return { nodes: [], edges: [] }
-  const nodes = Array.isArray(arch.nodes) ? arch.nodes : []
-  const edges = Array.isArray(arch.edges) ? arch.edges : []
-  if (nodes.length > MAX_NODE_ID) throw new ApiError(400, `An architecture may contain at most ${MAX_NODE_ID} components.`)
-  if (edges.length > MAX_EDGE_ID) throw new ApiError(400, `An architecture may contain at most ${MAX_EDGE_ID} connections.`)
-
-  const ids = new Set()
-  for (const n of nodes) {
-    if (!n?.id || !n?.type) throw new ApiError(400, 'Every component needs an id and a type.')
-    if (ids.has(n.id)) throw new ApiError(400, `Duplicate component id: ${n.id}`)
-    ids.add(n.id)
-  }
-  for (const e of edges) {
-    if (!e?.source || !e?.target) throw new ApiError(400, 'Every connection needs a source and a target.')
-    if (!ids.has(e.source) || !ids.has(e.target)) {
-      throw new ApiError(400, 'Connection references a component that does not exist.')
-    }
-  }
-  return { nodes, edges }
+  return assertArchitecture(arch, ApiError)
 }
 
 function toPublic(project) {
@@ -95,8 +79,17 @@ export async function updateProject(id, ownerId, patch) {
 
 export async function deleteProject(id, ownerId) {
   if (!isValidId(id)) throw new ApiError(404, 'Project not found.')
-  const project = await Project.findOneAndDelete({ _id: id, owner: ownerId })
+  const project = await Project.findOne({ _id: id, owner: ownerId })
   if (!project) throw new ApiError(404, 'Project not found.')
+
+  // Versions are keyed by project and become unreachable the moment the project row is
+  // gone, so they must be removed first. That order is deliberate: if the process dies
+  // between the two writes, the project is still listed with fewer versions and the delete
+  // can simply be retried, whereas deleting the project first would strand the versions
+  // permanently with nothing left to trigger the cleanup.
+  await ArchitectureVersion.deleteMany({ project: project._id })
+  await Project.deleteOne({ _id: project._id })
+
   return { id: project._id.toString(), name: project.name }
 }
 

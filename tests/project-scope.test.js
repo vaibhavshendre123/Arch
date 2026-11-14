@@ -174,7 +174,17 @@ describe('the backend is the only owner of project data', () => {
     assert.match(service, /Project\.find\(\{ owner: ownerId \}\)/)
     assert.match(service, /findOne\(\{ _id: id, owner: ownerId \}\)/)
     assert.match(service, /findOneAndUpdate\(\{ _id: id, owner: ownerId \}/)
-    assert.match(service, /findOneAndDelete\(\{ _id: id, owner: ownerId \}\)/)
+  })
+
+  it('delete looks the project up by owner before removing it', () => {
+    // Delete used to be a single owner-scoped findOneAndDelete. It now has to read the
+    // document first so the version history can be cascaded, which means the ownership
+    // check must be proven to happen before the removal, not alongside it.
+    const del = service.slice(service.indexOf('export async function deleteProject'))
+    assert.match(del, /findOne\(\{ _id: id, owner: ownerId \}\)/)
+    assert.match(del, /ArchitectureVersion\.deleteMany\(\{ project: project\._id \}\)/)
+    assert.match(del, /Project\.deleteOne\(\{ _id: project\._id \}\)/)
+    assert.doesNotMatch(del, /deleteOne\(\{ _id: id \}\)/, 'the raw request id must never reach a delete')
   })
 
   it('takes the owner from the verified token, never from the request body', () => {

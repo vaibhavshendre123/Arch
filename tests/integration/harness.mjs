@@ -200,7 +200,7 @@ export function withInvalidToken() {
 export function archWith(label, nodeCount = 2) {
   const nodes = Array.from({ length: nodeCount }, (_, i) => ({
     id: `n${i + 1}`,
-    type: i === 0 ? 'api' : 'db',
+    type: i === 0 ? 'apiGateway' : 'database',
     name: `${label}-node-${i + 1}`,
   }))
   const edges = nodes.slice(1).map((n, i) => ({ id: `e${i + 1}`, source: nodes[i].id, target: n.id }))
