@@ -24,7 +24,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Node 26 is required by `--test-coverage-include-all` in `test:coverage`
+          # (added in Node 26.7). It keeps untested `src/lib` modules in the coverage
+          # report, so the floor cannot be passed by simply not importing a new file.
+          node-version: 26
           cache: npm
           cache-dependency-path: |
             package-lock.json
@@ -66,7 +69,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
           cache-dependency-path: backend/package-lock.json
 

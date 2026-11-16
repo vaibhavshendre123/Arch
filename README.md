@@ -54,6 +54,9 @@ bottleneck rather than inventing one.
 
 ## Getting started
 
+The toolchain targets Node.js 26. Node 26.7 or newer is required by
+`npm run test:coverage`, which uses `--test-coverage-include-all`.
+
 ### Backend
 
 ```bash
@@ -100,7 +103,7 @@ development does not depend on the backend's CORS allowlist. Override with
 | `npm run preview` | frontend | Serve the production build locally |
 
 CI (`.github/workflows/ci.yml`) runs lint, unit tests, the coverage floor and both builds on
-Node 22 for every push and pull request. The integration and browser suites are not in CI yet
+Node 26 for every push and pull request. The integration and browser suites are not in CI yet
 because they need a live MongoDB and a Playwright browser image; they run locally with the
 commands above.
 

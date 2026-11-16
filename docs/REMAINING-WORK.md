@@ -130,11 +130,12 @@ full results with delete-then-write eviction; the persisted summaries keep their
 **Quality gates.** The backend now defines `lint` (oxlint), `test` (node's runner) and
 `build` (parses every source file and loads the Express app without binding a port).
 `.github/workflows/ci.yml` runs frontend lint, unit tests, the coverage floor and
-`vite build`, then the same three backend gates, on Node 22 with npm caching. The coverage
-floor is 86% line coverage on `src/lib/**`; measured is ~89%. Boot-time environment
-validation (`assertEnv`) runs before the database connection and refuses to start on a
-malformed `PORT`, unknown `NODE_ENV`, malformed origin, too-short `JWT_SECRET`, or a
-production boot missing its secrets.
+`vite build`, then the same three backend gates, on Node 26 with npm caching. Node 26 is
+required by the `--test-coverage-include-all` flag, which keeps unimported `src/lib` modules
+in the report. The coverage floor is 86% line coverage on `src/lib/**`; measured is ~89%.
+Boot-time environment validation (`assertEnv`) runs before the database connection and
+refuses to start on a malformed `PORT`, unknown `NODE_ENV`, malformed origin, too-short
+`JWT_SECRET`, or a production boot missing its secrets.
 
 ---
 
