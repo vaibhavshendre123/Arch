@@ -26,9 +26,18 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
 
       - name: Install
         run: npm ci
+
+      - name: Install backend dependencies
+        # The frontend unit suite imports backend modules directly (auth.service,
+        # recommendation.service), so their dependencies — bcrypt, dotenv, etc. — must be
+        # installed here as well. They are declared once, in backend/package.json.
+        run: npm ci --prefix backend
 
       - name: Lint
         # Warnings are allowed; the command fails on any error.

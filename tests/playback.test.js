@@ -8,6 +8,9 @@ import {
   REAL_TIME,
   DEFAULT_WALL_CLOCK,
 } from '../src/lib/playback.js'
+import { toContract } from '../src/lib/contract.js'
+import { runSimulation } from '../src/lib/engine.js'
+import { starterArchitecture } from '../src/data/seedArchitectures.js'
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 const flow = read('src/components/ArchitectureFlow.jsx')
@@ -101,13 +104,55 @@ describe('resolveSpeed', () => {
 })
 
 describe('the engine logs a sample spread across the whole run', () => {
+  const contract = () => toContract(starterArchitecture())
+  const rateRun = (maxLoggedCases) =>
+    runSimulation(
+      contract(),
+      { arrivalRate: 100, duration: 60, seed: 20260927 },
+      { maxLoggedCases },
+    )
+
   it('samples every Nth arrival instead of the first N', () => {
-    assert.doesNotMatch(engine, /if \(loggedCaseSlots < maxLoggedCases\) \{\s*simCase\.logged = true/)
-    assert.match(engine, /nextCaseId % sampleEvery === 0/)
+    const sim = rateRun(20)
+    const stats = sim.loggingStats
+
+    // 100 req/s for 60 s is 6,000 arrivals; a 20-case budget means one case in 300.
+    assert.equal(stats.samplingMode, 'stride')
+    assert.equal(stats.expectedCases, 6000)
+    assert.equal(stats.sampleEvery, 300)
+    assert.ok(stats.sampledCases > 0, 'expected at least one logged case')
+    assert.ok(
+      stats.sampledCases <= 20,
+      `expected at most 20 sampled cases, got ${stats.sampledCases}`,
+    )
+
+    // The budget must be spread over the run, not spent on the opening arrivals.
+    assert.ok(
+      stats.loggedWindowMs > 0.5 * 60 * 1000,
+      `expected the log to span most of the run, got ${stats.loggedWindowMs} ms`,
+    )
   })
 
   it('derives the stride from the expected arrival count', () => {
-    assert.match(engine, /const sampleEvery = Math\.max\(1, Math\.floor\(expectedCases \/ maxLoggedCases\)\)/)
+    // A larger logging budget means a proportionally smaller stride, from the same
+    // expected arrival count. This is behaviour, not an implementation detail.
+    assert.equal(rateRun(40).loggingStats.sampleEvery, 150)
+    assert.equal(rateRun(20).loggingStats.sampleEvery, 300)
+    assert.equal(rateRun(6000).loggingStats.sampleEvery, 1)
+  })
+
+  it('samples a closed loop by time because its population is recycled', () => {
+    const sim = runSimulation(
+      contract(),
+      { mode: 'closed', concurrentUsers: 25, duration: 30, seed: 20260927 },
+      { maxLoggedCases: 20 },
+    )
+    const stats = sim.loggingStats
+
+    assert.equal(stats.samplingMode, 'time')
+    assert.equal(stats.sampleEvery, 1)
+    assert.ok(stats.sampledCases > 0)
+    assert.ok(stats.sampledCases <= 20)
   })
 
   it('reports the stride and the logged window so the UI can be honest', () => {
