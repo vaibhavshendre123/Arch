@@ -17,9 +17,10 @@ export const parameterMeta = {
   memoryPerSessionMb: { label: 'Memory / Session', unit: 'MB', min: 0, max: 512, step: 1, kind: 'number' },
   retryLimit: { label: 'Retry Limit', unit: 'attempts', min: 0, max: 5, step: 1, kind: 'number' },
   baseLatencyMs: { label: 'Network Latency', unit: 'ms', min: 0, max: 500, step: 1, kind: 'number' },
+  serviceTimeCv: { label: 'Service Time CV', unit: '0–2', min: 0, max: 2, step: 0.05, kind: 'number' },
 }
 
-const base = { memoryMb: 128, memoryPerSessionMb: 8, retryLimit: 1, baseLatencyMs: 2 }
+const base = { memoryMb: 128, memoryPerSessionMb: 8, retryLimit: 1, baseLatencyMs: 2, serviceTimeCv: 0 }
 
 export const nodeTypes = {
   user: { name: 'User', cat: 'client', shape: 'pill', defaults: {} },
@@ -62,6 +63,7 @@ export const nodeTypes = {
       memoryPerSessionMb: 24,
       retryLimit: 1,
       baseLatencyMs: 4,
+      serviceTimeCv: 0,
     },
   },
   cache: {

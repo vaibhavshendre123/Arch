@@ -20,6 +20,7 @@ export const PARAMETER_SPEC = Object.freeze({
   memoryPerSessionMb: { min: 0, max: 512 },
   retryLimit: { min: 0, max: 5, integer: true },
   baseLatencyMs: { min: 0, max: 500 },
+  serviceTimeCv: { min: 0, max: 2 },
 })
 
 export const NODE_TYPE_KEYS = Object.freeze([

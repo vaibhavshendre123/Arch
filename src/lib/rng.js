@@ -69,5 +69,44 @@ export function createRng(seed) {
     return -Math.log(u > 0 && u < 1 ? u : Number.EPSILON) * m
   }
 
-  return { next, int, float, pick, bool, exponential }
+  // Gamma sampler (Marsaglia–Tsang). Service times stay exponential when the coefficient
+  // of variation is 1 (shape 1); a shape below 1 is boosted by the standard U^(1/k)
+  // transform so a low CV can produce a near-deterministic service time.
+  const gamma = (shape, scale = 1) => {
+    const k = Number.isFinite(shape) ? shape : 0
+    const theta = Number.isFinite(scale) ? scale : 0
+    if (!(k > 0) || !(theta > 0)) return 0
+
+    let a = k
+    let boost = 1
+    if (a < 1) {
+      a += 1
+      const u = next()
+      boost = Math.pow(u > 0 ? u : Number.EPSILON, 1 / k)
+    }
+
+    const d = a - 1 / 3
+    const c = 1 / Math.sqrt(9 * d)
+    // The acceptance loop is bounded so a pathological draw can never hang the engine.
+    for (let attempt = 0; attempt < 64; attempt += 1) {
+      let x = 0
+      let v = 0
+      do {
+        const u1 = next()
+        const u2 = next()
+        const radius = Math.sqrt(-2 * Math.log(u1 > 0 ? u1 : Number.EPSILON))
+        x = radius * Math.cos(2 * Math.PI * u2)
+        v = 1 + c * x
+      } while (v <= 0)
+      v = v * v * v
+      const u = next()
+      if (u < 1 - 0.0331 * x * x * x * x) return theta * d * v * boost
+      if (Math.log(u > 0 ? u : Number.EPSILON) < 0.5 * x * x + d * (1 - v + Math.log(v))) {
+        return theta * d * v * boost
+      }
+    }
+    return theta * d * boost
+  }
+
+  return { next, int, float, pick, bool, exponential, gamma }
 }

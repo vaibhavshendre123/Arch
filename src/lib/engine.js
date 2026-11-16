@@ -53,6 +53,7 @@ function buildComponents(graph) {
     if (typeof id !== 'string' && typeof id !== 'number') continue
     if (id === '' || index.has(id)) continue
     const params = resolveParams(node)
+    const capacityConfigured = Number.isFinite(params.capacity) && params.capacity > 0
     const capacity = Math.max(1, Math.floor(positiveNumber(params.capacity, FALLBACK_CAPACITY)))
     const configuredQueue = Math.floor(positiveNumber(params.queueCapacity, 0))
     const memoryMb = positiveNumber(params.memoryMb, 128)
@@ -64,7 +65,9 @@ function buildComponents(graph) {
       category: nodeTypes[node.type]?.cat || 'application',
       params,
       capacity,
+      capacityAssumed: !capacityConfigured,
       processingTimeMs: positiveNumber(params.processingTime, 0),
+      serviceTimeCv: clamp(positiveNumber(params.serviceTimeCv, 0), 0, 2),
       configuredQueueCapacity: configuredQueue,
       queueCapacity: configuredQueue > 0 ? configuredQueue : Infinity,
       failureProbability: clamp(positiveNumber(params.failureProbability, 0), 0, 1),
@@ -74,6 +77,8 @@ function buildComponents(graph) {
       memoryPerSessionMb,
       memoryLimitMb: nodeMemoryLimit({ ...params, capacity, memoryMb, memoryPerSessionMb }),
       outgoing: [],
+      outgoingWeights: [],
+      weightedOutgoing: false,
       queue: [],
       queueHead: 0,
       queueLength: 0,
@@ -88,15 +93,24 @@ function buildComponents(graph) {
       retries: 0,
       dropped: 0,
     }
-    for (const target of graph.outgoing.get(id) || []) {
+    const targets = graph.outgoing.get(id) || []
+    const weights = graph.outgoingWeights?.get(id) || []
+    for (let i = 0; i < targets.length; i += 1) {
+      const target = targets[i]
       if (target === id) continue
-      pendingTargets.push([component, target])
+      const weight = weights[i]
+      pendingTargets.push([component, target, typeof weight === 'number' && Number.isFinite(weight) && weight > 0 ? weight : null])
     }
     index.set(id, component)
     list.push(component)
   }
-  for (const [component, target] of pendingTargets) {
-    if (index.has(target)) component.outgoing.push(target)
+  for (const [component, target, weight] of pendingTargets) {
+    if (!index.has(target)) continue
+    component.outgoing.push(target)
+    component.outgoingWeights.push(weight)
+  }
+  for (const component of list) {
+    component.weightedOutgoing = component.outgoingWeights.some((weight) => weight !== null)
   }
   return { list, index }
 }
@@ -118,17 +132,23 @@ export function runSimulation(contract, workload, options) {
   const load = workload && typeof workload === 'object' ? workload : {}
   const architecture = contract && typeof contract === 'object' ? contract : { nodes: [], edges: [] }
   const maxLoggedCases = positiveInt(settings.maxLoggedCases, DEFAULT_MAX_LOGGED_CASES)
+  const mode = load.mode === 'closed' ? 'closed' : 'rate'
+  const closedLoop = mode === 'closed'
   const arrivalRate = positiveNumber(load.arrivalRate, 0)
   const duration = positiveNumber(load.duration, 0)
+  const population = closedLoop ? Math.max(1, positiveInt(load.concurrentUsers, 1)) : 0
   const seed = load.seed ?? 0
   const windowMs = Math.max(0, duration) * 1000
   const rng = createRng(seed)
 
   // How many arrivals the run window is expected to produce. This sets the sampling
   // stride for the event log so the logged cases are spread across the entire duration
-  // instead of clustered at its start.
-  const expectedCases = Math.max(1, Math.round(positiveNumber(load.arrivalRate, 0) * positiveNumber(load.duration, 0)))
-  const sampleEvery = Math.max(1, Math.floor(expectedCases / maxLoggedCases))
+  // instead of clustered at its start. A closed loop recycles a fixed population, so
+  // its sampling budget is spread by time instead (see shouldLogCase).
+  const expectedCases = closedLoop
+    ? Math.max(1, population)
+    : Math.max(1, Math.round(arrivalRate * duration))
+  const sampleEvery = closedLoop ? 1 : Math.max(1, Math.floor(expectedCases / maxLoggedCases))
 
   const graph = graphOf(architecture)
   const { list: componentList, index: componentIndex } = buildComponents(graph)
@@ -160,6 +180,7 @@ export function runSimulation(contract, workload, options) {
   let latencyTotal = 0
   let queueSamples = 0
   let nextArrivalTime = 0
+  let stepsCappedCases = 0
 
   const record = (simCase, activity, component, status) => {
     totalActivities += 1
@@ -210,14 +231,20 @@ export function runSimulation(contract, workload, options) {
       failedRequests += 1
     }
     const latency = now - simCase.startTime
-    if (!Number.isFinite(latency) || latency < 0) return
-    latencies.push(latency)
-    latencyTotal += latency
-    if (latencyPairs.length < MAX_LATENCY_SAMPLES * 2) {
-      latencyPairs.push(now, latency)
-    } else {
-      latencyPairs[latencyPairs.length - 2] = now
-      latencyPairs[latencyPairs.length - 1] = latency
+    if (Number.isFinite(latency) && latency >= 0) {
+      latencies.push(latency)
+      latencyTotal += latency
+      if (latencyPairs.length < MAX_LATENCY_SAMPLES * 2) {
+        latencyPairs.push(now, latency)
+      } else {
+        latencyPairs[latencyPairs.length - 2] = now
+        latencyPairs[latencyPairs.length - 1] = latency
+      }
+    }
+    // A closed loop recycles its population: the user whose request just ended issues
+    // the next one. Queuing an ARRIVAL keeps equal-timestamp ordering deterministic.
+    if (closedLoop && now < windowMs) {
+      queue.push({ time: now, type: EVENT_ARRIVAL, payload: null })
     }
   }
 
@@ -228,6 +255,18 @@ export function runSimulation(contract, workload, options) {
     finishCase(simCase, OUTCOME_DROPPED, component)
   }
 
+  // Service duration is drawn from a gamma distribution only when a coefficient of
+  // variation is configured. At the default cv = 0 this returns the configured duration
+  // without touching the RNG, so existing runs and their seeds reproduce exactly.
+  const sampleServiceDuration = (component) => {
+    const mean = component.processingTimeMs
+    const cv = component.serviceTimeCv
+    if (!(cv > 0) || !(mean > 0)) return mean
+    const shape = 1 / (cv * cv)
+    const scale = mean * cv * cv
+    return rng.gamma(shape, scale)
+  }
+
   const startService = (simCase, component) => {
     component.busy += 1
     if (component.busy > component.peakOccupancy) component.peakOccupancy = component.busy
@@ -236,7 +275,7 @@ export function runSimulation(contract, workload, options) {
     record(simCase, ACTIVITY.QUEUE_EXIT, component, 'success')
     record(simCase, ACTIVITY.START, component, 'success')
     queue.push({
-      time: now + component.processingTimeMs,
+      time: now + sampleServiceDuration(component),
       type: EVENT_SERVICE_DONE,
       payload: { simCase, component, startedAt: now },
     })
@@ -283,6 +322,22 @@ export function runSimulation(contract, workload, options) {
     trackQueueDepth(component)
   }
 
+  const pickWeightedTarget = (targets, weights) => {
+    let total = 0
+    for (let i = 0; i < targets.length; i += 1) {
+      const weight = weights[i]
+      total += typeof weight === 'number' && Number.isFinite(weight) && weight > 0 ? weight : 1
+    }
+    if (!(total > 0)) return rng.pick(targets)
+    let draw = rng.next() * total
+    for (let i = 0; i < targets.length; i += 1) {
+      const weight = weights[i]
+      draw -= typeof weight === 'number' && Number.isFinite(weight) && weight > 0 ? weight : 1
+      if (draw < 0) return targets[i]
+    }
+    return targets[targets.length - 1]
+  }
+
   const routeForward = (simCase, component) => {
     const targets = component.outgoing
     if (!targets.length) {
@@ -290,11 +345,19 @@ export function runSimulation(contract, workload, options) {
       return
     }
     if (simCase.steps >= MAX_STEPS_PER_CASE) {
+      stepsCappedCases += 1
       record(simCase, ACTIVITY.FAILURE, component, 'aborted')
       finishCase(simCase, OUTCOME_FAILED, component)
       return
     }
-    const targetId = targets.length === 1 ? targets[0] : rng.pick(targets)
+    const targetId =
+      targets.length === 1
+        ? targets[0]
+        : // Explicit weights split traffic proportionally. Without any weight the
+          // original equal-share pick is preserved, including its RNG consumption.
+          component.weightedOutgoing
+          ? pickWeightedTarget(targets, component.outgoingWeights)
+          : rng.pick(targets)
     const target = componentIndex.get(targetId)
     simCase.retries = 0
     const delay = target ? target.baseLatencyMs : 0
@@ -332,6 +395,18 @@ export function runSimulation(contract, workload, options) {
     routeForward(simCase, component)
   }
 
+  const shouldLogCase = () => {
+    if (loggedCaseSlots >= maxLoggedCases) return false
+    if (closedLoop) {
+      // A closed loop recycles a fixed population, so the opening burst contains far more
+      // cases than the logging budget. Spending the budget by elapsed time samples the
+      // whole run instead of only its first moments.
+      const expected = windowMs > 0 ? (now / windowMs) * maxLoggedCases : maxLoggedCases
+      return loggedCaseSlots < Math.floor(expected) + 1
+    }
+    return nextCaseId % sampleEvery === 0
+  }
+
   const startCase = (entryId) => {
     const component = componentIndex.get(entryId)
     nextCaseId += 1
@@ -344,7 +419,7 @@ export function runSimulation(contract, workload, options) {
     // 1.3 s. Spreading the same budget across the whole window keeps the replay
     // timeline aligned with the configured duration. Deterministic for a given seed,
     // and still capped at maxLoggedCases so memory stays bounded.
-    if (nextCaseId % sampleEvery === 0 && loggedCaseSlots < maxLoggedCases) {
+    if (shouldLogCase()) {
       simCase.logged = true
       loggedCaseSlots += 1
       loggedCaseIds.add(simCase.id)
@@ -358,7 +433,15 @@ export function runSimulation(contract, workload, options) {
     nextArrivalTime += rng.exponential(1000 / arrivalRate)
   }
 
-  if (arrivalRate > 0 && windowMs > 0 && entries.length > 0) {
+  if (closedLoop) {
+    if (windowMs > 0 && entries.length > 0) {
+      // Every simulated user starts with one request at t = 0. Re-issues are queued when
+      // each request finishes, so the population stays fixed for the whole window.
+      for (let i = 0; i < population; i += 1) {
+        queue.push({ time: 0, type: EVENT_ARRIVAL, payload: null })
+      }
+    }
+  } else if (arrivalRate > 0 && windowMs > 0 && entries.length > 0) {
     nextArrivalTime = rng.exponential(1000 / arrivalRate)
     if (nextArrivalTime <= windowMs) pushArrival()
   }
@@ -371,7 +454,7 @@ export function runSimulation(contract, workload, options) {
     processedEvents += 1
     if (event.type === EVENT_ARRIVAL) {
       startCase(entries.length === 1 ? entries[0] : rng.pick(entries))
-      if (nextArrivalTime <= windowMs) pushArrival()
+      if (!closedLoop && nextArrivalTime <= windowMs) pushArrival()
     } else if (event.type === EVENT_TRANSIT) {
       const transit = event.payload || {}
       enterNode(transit.simCase, transit.component)
@@ -409,6 +492,12 @@ export function runSimulation(contract, workload, options) {
 // windowMs there divided every busyTime by a span that never ran, understating
 // utilisation (a run truncated at half its window reported roughly half the real load).
 const truncated = processedEvents >= MAX_PROCESSED_EVENTS && lastEventTime < windowMs
+const truncation = {
+  eventCapReached: processedEvents >= MAX_PROCESSED_EVENTS,
+  eventCap: MAX_PROCESSED_EVENTS,
+  stepsCappedCases,
+  maxStepsPerCase: MAX_STEPS_PER_CASE,
+}
 const simulatedRaw = Math.max(lastEventTime > 0 ? lastEventTime : windowMs, 0)
 const simulatedMs = round(simulatedRaw, 3)
   const denominator = simulatedRaw > 0 ? simulatedRaw / 1000 : 1
@@ -433,6 +522,13 @@ const simulatedMs = round(simulatedRaw, 3)
   const safeTotal = Math.max(1, totalRequests)
   const avgLatencyMs = finishedCount > 0 ? latencyTotal / finishedCount : 0
   const littleLawConcurrency = (arrivalRate * avgLatencyMs) / 1000
+  // In a closed loop the achieved arrival rate is an output, not an input: it is the
+  // rate the recycled population actually sustained over the simulated span.
+  const effectiveArrivalRate = closedLoop
+    ? denominator > 0
+      ? totalRequests / denominator
+      : 0
+    : arrivalRate
 
   const metrics = {
     totalRequests,
@@ -465,6 +561,7 @@ const simulatedMs = round(simulatedRaw, 3)
       type: component.type,
       category: component.category,
       capacity: component.capacity,
+      capacityAssumed: component.capacityAssumed,
       processingTimeMs: round(component.processingTimeMs, 3),
       queueCapacity: component.configuredQueueCapacity,
       busyTimeMs: round(component.busyTimeMs, 3),
@@ -483,15 +580,32 @@ const simulatedMs = round(simulatedRaw, 3)
     }
   }
 
+  const assumptions = componentList
+    .filter((component) => component.capacityAssumed)
+    .map((component) => ({
+      componentId: component.id,
+      component: component.name,
+      parameter: 'capacity',
+      value: component.capacity,
+      reason: 'No positive capacity was configured, so the engine used its built-in fallback.',
+    }))
+
   return {
     seed,
+    mode,
+    population: closedLoop ? population : null,
     arrivalRate,
+    effectiveArrivalRate: round(effectiveArrivalRate, 4),
     duration,
-    concurrentUsers: round(littleLawConcurrency, 4),
+    concurrentUsers: closedLoop ? population : round(littleLawConcurrency, 4),
     // The span actually simulated, in ms. Lower than duration * 1000 only when the event
     // budget cut the run short.
     simulatedMs,
     truncated,
+    truncation,
+    // Inputs the engine had to assume rather than read from the architecture. Reported so
+    // a fallback capacity can never be mistaken for a configured one.
+    assumptions,
     metrics,
     components,
     eventLog: trimmedLog,
@@ -505,8 +619,9 @@ const simulatedMs = round(simulatedRaw, 3)
       // partial traces stay in the log and surface as incomplete traces in mining.
       unfinishedSampledCases: unfinishedLoggedCaseIds.size,
       totalCases: totalRequests,
-      // Every logged case comes from the same deterministic stride, so the sample is an
-      // even systematic sample of the run rather than a prefix of it.
+      // Open loop logs a deterministic stride of cases; a closed loop spends a time-based
+      // budget so its recycled population is sampled across the window.
+      samplingMode: closedLoop ? 'time' : 'stride',
       sampleEvery,
       expectedCases,
       loggedWindowMs: trimmedLog.length ? lastLoggedTs - firstLoggedTs : 0,

@@ -19,7 +19,7 @@
  */
 
 /** Bumped when the shape changes, so an old blob is discarded rather than misread. */
-export const DIGEST_VERSION = 2
+export const DIGEST_VERSION = 3
 
 /** Most recent runs kept per browser. Each is a few KB; this bounds the worst case. */
 export const MAX_SUMMARIES = 12
@@ -38,11 +38,24 @@ export function toSimDigest(sim) {
   return {
     v: DIGEST_VERSION,
     savedAt: Date.now(),
+    mode: sim.mode === 'closed' ? 'closed' : 'rate',
+    population: Number.isFinite(Number(sim.population)) ? Number(sim.population) : null,
     arrivalRate: Number(sim.arrivalRate) || 0,
+    effectiveArrivalRate: Number(sim.effectiveArrivalRate) || 0,
     duration: Number(sim.duration) || 0,
     seed: sim.seed ?? null,
     simulatedMs: Number(sim.simulatedMs) || 0,
     truncated: Boolean(sim.truncated),
+    truncation:
+      sim.truncation && typeof sim.truncation === 'object'
+        ? {
+            eventCapReached: Boolean(sim.truncation.eventCapReached),
+            eventCap: Number(sim.truncation.eventCap) || 0,
+            stepsCappedCases: Number(sim.truncation.stepsCappedCases) || 0,
+            maxStepsPerCase: Number(sim.truncation.maxStepsPerCase) || 0,
+          }
+        : null,
+    assumptions: Array.isArray(sim.assumptions) ? sim.assumptions : [],
     concurrentUsers: Number(sim.concurrentUsers) || 0,
     metrics,
     components: sim.components && typeof sim.components === 'object' ? sim.components : {},

@@ -517,7 +517,11 @@ function bottleneckNote(component, stats) {
   const util = stats.derived
     ? `, with a peak queue of ${stats.queueDepthMax}; utilisation is unavailable because it cannot be recovered from an event log prefix`
     : ` and a peak queue of ${stats.queueDepthMax}, at ${pct1(stats.utilisation)}% supplied utilisation`
-  return `${component} makes requests wait ${stats.waitingMs} ms on average against ${stats.processingMs} ms of processing, a wait ratio of ${stats.waitRatio}x over ${stats.visits} visits${util}.`
+  const assumed =
+    stats.assumedCapacity != null
+      ? ` Capacity was assumed at ${stats.assumedCapacity} because none was configured, so utilisation is relative to that assumption.`
+      : ''
+  return `${component} makes requests wait ${stats.waitingMs} ms on average against ${stats.processingMs} ms of processing, a wait ratio of ${stats.waitRatio}x over ${stats.visits} visits${util}.${assumed}`
 }
 
 function buildBottlenecks(records, options) {
@@ -562,6 +566,14 @@ function buildBottlenecks(records, options) {
     const measured = supplied ? supplied[componentId] ?? supplied[key] : undefined
     const utilisation = clamp(measured != null ? Number(measured) : 0, 0, 1)
     const suppliedDepth = options.queueDepth ? options.queueDepth[componentId] ?? options.queueDepth[key] : undefined
+    const assumption =
+      options.assumptions && typeof options.assumptions === 'object'
+        ? options.assumptions[componentId] ?? options.assumptions[key]
+        : null
+    const assumedCapacity =
+      assumption?.capacity?.assumed && Number.isFinite(Number(assumption.capacity.value))
+        ? Number(assumption.capacity.value)
+        : null
     const stats = {
       componentId,
       component: key,
@@ -577,6 +589,7 @@ function buildBottlenecks(records, options) {
       visits: visitsCount,
       utilisation,
       derived: measured == null,
+      assumedCapacity,
     }
     list.push({
       componentId,
@@ -586,6 +599,7 @@ function buildBottlenecks(records, options) {
       waitRatio,
       queueDepthMax: stats.queueDepthMax,
       visits: visitsCount,
+      capacityAssumed: assumedCapacity,
       severity: severityFor(waitRatio, utilisation),
       note: bottleneckNote(key, stats),
     })
@@ -615,15 +629,20 @@ export function miningOptions(sim) {
   if (!components) return options
   const utilization = {}
   const queueDepth = {}
+  const assumptions = {}
   for (const [id, c] of Object.entries(components)) {
     if (!c || typeof c !== 'object') continue
     const util = Number(c.utilization)
     utilization[id] = Number.isFinite(util) ? clamp(util, 0, 1) : 0
     const depth = Number(c.queueLengthMax)
     queueDepth[id] = Number.isFinite(depth) ? depth : 0
+    if (c.capacityAssumed) {
+      assumptions[id] = { capacity: { assumed: true, value: Number(c.capacity) || null } }
+    }
   }
   options.utilization = utilization
   options.queueDepth = queueDepth
+  if (Object.keys(assumptions).length) options.assumptions = assumptions
   return options
 }
 
@@ -637,10 +656,18 @@ export function miningProvenance(sim, contract, extra = {}) {
   const seed = sim?.seed ?? extra.seed ?? null
   const arrivalRate = sim?.arrivalRate ?? extra.arrivalRate ?? null
   const duration = sim?.duration ?? extra.duration ?? null
-  const runKey = hash ? `${hash}::rate-${arrivalRate}::dur-${duration}::seed-${seed}` : null
+  const mode = sim?.mode === 'closed' || extra.mode === 'closed' ? 'closed' : 'rate'
+  const population = sim?.population ?? extra.population ?? null
+  const runKey = hash
+    ? mode === 'closed'
+      ? `${hash}::closed-${population}::dur-${duration}::seed-${seed}`
+      : `${hash}::rate-${arrivalRate}::dur-${duration}::seed-${seed}`
+    : null
   return {
     archHash: hash,
     seed,
+    mode,
+    population,
     arrivalRate,
     duration,
     runKey,

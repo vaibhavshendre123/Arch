@@ -10,7 +10,16 @@ export function toContract(architecture) {
     })),
     edges: (architecture?.edges || [])
       .filter((e) => e.source && e.target)
-      .map((e) => ({ source: e.source, target: e.target })),
+      .map((e) => {
+        const edge = { source: e.source, target: e.target }
+        // Only carry a usable weight. An absent weight means "equal share with siblings",
+        // so leaving the key out keeps the contract and its hash unchanged for ordinary
+        // architectures.
+        if (typeof e.weight === 'number' && Number.isFinite(e.weight) && e.weight > 0) {
+          edge.weight = e.weight
+        }
+        return edge
+      }),
   }
 }
 
@@ -24,11 +33,17 @@ export function contractToBuilder(contract, template = null) {
       position: positions.get(n.id) || { x: 80 + (i % 4) * 260, y: 80 + Math.floor(i / 4) * 150 },
       parameters: { ...n.parameters },
     })),
-    edges: (contract.edges || []).map((e, i) => ({
-      id: `e${i + 1}-${e.source}-${e.target}`,
-      source: e.source,
-      target: e.target,
-    })),
+    edges: (contract.edges || []).map((e, i) => {
+      const edge = {
+        id: `e${i + 1}-${e.source}-${e.target}`,
+        source: e.source,
+        target: e.target,
+      }
+      if (typeof e.weight === 'number' && Number.isFinite(e.weight) && e.weight > 0) {
+        edge.weight = e.weight
+      }
+      return edge
+    }),
   }
 }
 
@@ -48,17 +63,24 @@ export function graphOf(architecture) {
   const nodes = contract.nodes
   const byId = new Map(nodes.map((n) => [n.id, n]))
   const outgoing = new Map()
+  const outgoingWeights = new Map()
   const incoming = new Map()
   for (const n of nodes) {
     outgoing.set(n.id, [])
+    outgoingWeights.set(n.id, [])
     incoming.set(n.id, [])
   }
   for (const e of contract.edges) {
     if (!byId.has(e.source) || !byId.has(e.target)) continue
     outgoing.get(e.source).push(e.target)
+    // Aligned with `outgoing`: null means no explicit weight, so the engine keeps its
+    // existing equal-share random pick rather than introducing a weighted draw.
+    outgoingWeights.get(e.source).push(
+      typeof e.weight === 'number' && Number.isFinite(e.weight) && e.weight > 0 ? e.weight : null,
+    )
     incoming.get(e.target).push(e.source)
   }
-  return { nodes, edges: contract.edges, byId, outgoing, incoming }
+  return { nodes, edges: contract.edges, byId, outgoing, incoming, outgoingWeights }
 }
 
 export function entryNodeIds(architecture) {

@@ -17,6 +17,8 @@ export const CODES = {
   INVALID_PROCESSING_TIME: 'INVALID_PROCESSING_TIME',
   INVALID_FAILURE_PROBABILITY: 'INVALID_FAILURE_PROBABILITY',
   INVALID_QUEUE_CAPACITY: 'INVALID_QUEUE_CAPACITY',
+  INVALID_SERVICE_TIME_CV: 'INVALID_SERVICE_TIME_CV',
+  INVALID_EDGE_WEIGHT: 'INVALID_EDGE_WEIGHT',
   NO_CONNECTIONS: 'NO_CONNECTIONS',
   UNKNOWN_NODE_TYPE: 'UNKNOWN_NODE_TYPE',
   // Architectural rules
@@ -196,6 +198,20 @@ export function validateArchitecture(architecture) {
           [e.id].filter(Boolean),
         ),
       )
+    }
+    if (e.weight !== undefined && e.weight !== null) {
+      const weight = e.weight
+      if (typeof weight !== 'number' || !Number.isFinite(weight) || weight <= 0) {
+        errors.push(
+          err(
+            CODES.INVALID_EDGE_WEIGHT,
+            `Connection "${edgeLabel}" has an invalid weight (${String(weight)}); it must be a finite number greater than zero.`,
+            'Set a positive weight, or leave it blank to split traffic equally with its sibling connections.',
+            [],
+            [e.id].filter(Boolean),
+          ),
+        )
+      }
     }
   }
 
@@ -414,6 +430,19 @@ export function validateArchitecture(architecture) {
           [n.id],
         ),
       )
+    }
+    if (p.serviceTimeCv !== undefined) {
+      const cv = p.serviceTimeCv
+      if (typeof cv !== 'number' || !Number.isFinite(cv) || cv < 0 || cv > 2) {
+        errors.push(
+          err(
+            CODES.INVALID_SERVICE_TIME_CV,
+            `"${n.name || n.id}" has a service time coefficient of variation of ${String(cv)}; it must be between 0 and 2.`,
+            'Open the component properties and set the service time CV between 0 (fixed duration) and 2.',
+            [n.id],
+          ),
+        )
+      }
     }
   }
 

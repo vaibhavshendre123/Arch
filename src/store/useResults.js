@@ -95,6 +95,9 @@ export function resultKey(arch, workload) {
     workload.mode,
     workload.arrivalRate,
     workload.duration,
+    // A closed loop's population is an input, so two populations are two different runs.
+    // Open-loop keys stay unchanged, where the field is unused.
+    workload.mode === 'closed' ? workload.concurrentUsers : '',
     workload.seed,
   ].join('::')
 }
@@ -148,8 +151,10 @@ export function useResults(architecture, options = {}) {
       const payload = {
         architecture,
         workload: {
+          mode: workload.mode === 'closed' ? 'closed' : 'rate',
           arrivalRate: workload.arrivalRate,
           duration: workload.duration,
+          concurrentUsers: workload.concurrentUsers,
           seed: workload.seed,
         },
         options: { maxLoggedCases: 400 },
