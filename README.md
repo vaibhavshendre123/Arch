@@ -287,8 +287,15 @@ so no browser binary is downloaded.
 long-lived Node process and reach MongoDB Atlas; adjust the API base URL for that host.
 
 The production bundle refers to a **relative** `/api`, so a static host plus a reverse proxy
-works without rebuilding. Set `VITE_API_BASE_URL` at build time only if the API is served
-from a different origin, and add that frontend origin to the backend's CORS allowlist.
+works without rebuilding. `vercel.json` proxies `/api/*` to the Render backend **before**
+the SPA catch-all rewrite; without that first rule, `POST /api/auth/register` is rewritten
+to `index.html` and Vercel answers `405 Method Not Allowed`. Update that destination if the
+Render service URL changes.
+
+Alternatively, set `VITE_API_BASE_URL` to the backend origin (e.g.
+`https://arch-t63z.onrender.com/api`) as a **build-time** Vercel environment variable and
+redeploy. In that case the browser calls Render directly, so the frontend origin must also
+be in the backend's `CORS_ORIGINS` (or `CLIENT_URL`) allowlist.
 
 ## Security notes
 
