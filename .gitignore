@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+# The production frontend config holds only a public API origin, so it is tracked. Its
+# `.local` override (which may hold anything) remains ignored by the `.env.*` rule above.
+!.env.production
 *.pem
 *.key
 *.p12
