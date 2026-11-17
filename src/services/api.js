@@ -71,7 +71,7 @@ api.interceptors.response.use(
         ? 'The server took too long to answer. The Gemini advisor can take a minute under load — try again.'
         : null) ||
       (error.request && !error.response
-        ? 'Cannot reach the backend. Make sure it is running on port 5000.'
+        ? `Cannot reach the backend at ${API_BASE_URL}. In development, start it on port 5000; in production, check the API proxy/CORS setup and that the server is awake.`
         : null) ||
       error.message
     const wrapped = new Error(message)

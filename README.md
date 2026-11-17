@@ -292,10 +292,11 @@ the SPA catch-all rewrite; without that first rule, `POST /api/auth/register` is
 to `index.html` and Vercel answers `405 Method Not Allowed`. Update that destination if the
 Render service URL changes.
 
-Alternatively, set `VITE_API_BASE_URL` to the backend origin (e.g.
-`https://arch-t63z.onrender.com/api`) as a **build-time** Vercel environment variable and
-redeploy. In that case the browser calls Render directly, so the frontend origin must also
-be in the backend's `CORS_ORIGINS` (or `CLIENT_URL`) allowlist.
+Do **not** also set `VITE_API_BASE_URL` when using this proxy. That variable makes the
+browser call Render directly, bypassing the proxy and reintroducing CORS. If you do choose
+that route, set it to the backend origin (e.g. `https://arch-t63z.onrender.com/api`) as a
+**build-time** Vercel environment variable, redeploy, and make sure the exact origin in the
+address bar is in the backend's `CORS_ORIGINS` (or `CLIENT_URL`) allowlist.
 
 ## Security notes
 

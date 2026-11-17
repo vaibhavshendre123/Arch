@@ -451,7 +451,7 @@ Both stay open at the same time. Stopping one with `Ctrl+C` does not stop the ot
 | `bad auth : Authentication failed` | The password in `MONGO_URI` is wrong or was rotated, or the user has no privilege on the `archai` database. Re-copy the string from Atlas and check *Database Access → the user → a privilege on `archai`*. Special characters in the password must be percent-encoded. |
 | `EADDRINUSE` on port `5000` | Another process already holds the port. Change `PORT` in `backend/.env`, or stop the other process. |
 | `Failed to connect to MongoDB`, backend exits immediately | MongoDB is unreachable, so the server stops rather than serving a broken connection. Fix `MONGO_URI`, `DB_NAME`, or the DNS override above, then start it again. |
-| UI shows `Cannot reach the backend` | The backend is not running, or `VITE_API_BASE_URL` points somewhere else. Start terminal 1 and check that value. |
+| UI shows `Cannot reach the backend` | The request failed before an HTTP response. In development, start the backend and check `VITE_API_BASE_URL`. In production, check that the `/api` proxy is configured, that the exact frontend origin is in `CORS_ORIGINS`, and that the Render instance is awake. |
 | `401` on any request | The token is missing or has expired. Sign in again — the client clears the stored token on any `401`. |
 
 ## Project structure
