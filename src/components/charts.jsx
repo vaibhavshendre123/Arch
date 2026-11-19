@@ -34,8 +34,10 @@ function PanelTooltip({ active, payload, label, unit = '' }) {
   )
 }
 
-const axis = { tick: chartAxis.tick, axisLine: false, tickLine: false }
-const gridProps = { stroke: colors.lineSoft, strokeDasharray: '2 3' }
+// Getters keep these shared Recharts props in step with the active theme: spreading them
+// into a chart reads the current value at render time, not the value at module import.
+const axis = { get tick() { return chartAxis.tick }, axisLine: false, tickLine: false }
+const gridProps = { get stroke() { return colors.lineSoft }, strokeDasharray: '2 3' }
 
 export function HealthRadar({ evaluation, height = 240 }) {
   const dims = evaluation?.dimensions || {}

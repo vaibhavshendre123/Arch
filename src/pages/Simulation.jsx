@@ -54,7 +54,7 @@ import { LatencyChart, MemoryChart, QueueChart } from '../components/charts.jsx'
 const MEAN_LATENCY_S = 0.2
 
 const linkBtn =
-  'inline-flex items-center gap-2 rounded-[7px] border border-accent bg-accent px-3.5 py-2 text-[13px] font-semibold text-[#1a1206] transition hover:brightness-110'
+  'inline-flex items-center gap-2 rounded-[7px] border border-accent bg-accent px-3.5 py-2 text-[13px] font-semibold text-on-accent transition hover:brightness-110'
 
 function SpinnerIcon() {
   return (
@@ -555,7 +555,7 @@ useEffect(() => {
                   resolveSpeed({ durationSec: duration, wallClockSec: s.key }),
                 )})`}
                 className={`rounded-[4px] px-1.5 py-0.5 font-mono text-[10.5px] transition ${
-                  wallClock === s.key ? 'bg-accent text-[#1a1206]' : 'text-ink-faint hover:text-ink'
+                  wallClock === s.key ? 'bg-accent text-on-accent' : 'text-ink-faint hover:text-ink'
                 }`}
               >
                 {s.label}
@@ -568,7 +568,7 @@ useEffect(() => {
               onClick={() => setWallClock(REAL_TIME)}
               title="Animate at the rate the engine actually used, with no time compression"
               className={`rounded-[4px] px-1.5 py-0.5 font-mono text-[10.5px] transition ${
-                wallClock === REAL_TIME ? 'bg-accent text-[#1a1206]' : 'text-ink-faint hover:text-ink'
+                wallClock === REAL_TIME ? 'bg-accent text-on-accent' : 'text-ink-faint hover:text-ink'
               }`}
             >
               1:1

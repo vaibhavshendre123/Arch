@@ -147,21 +147,46 @@ export function rgba(c, alpha) {
   return `rgba(${A[0] | 0},${A[1] | 0},${A[2] | 0},${alpha})`
 }
 
-export const RGB = {
-  cyan: toRgb(colors.teal),
-  blue: toRgb(colors.blue),
-  green: toRgb(colors.green),
-  amber: toRgb(colors.accent),
-  red: toRgb(colors.red),
-  purple: toRgb(colors.purple),
+// Canvas code needs raw channels, not CSS strings. Cache them, but key the cache on the
+// palette itself so switching theme refreshes the colours without a manual invalidation.
+let rgbCache = null
+let rgbKey = null
+
+function currentRgb() {
+  const key = [colors.teal, colors.blue, colors.green, colors.accent, colors.red, colors.purple].join('|')
+  if (rgbCache && rgbKey === key) return rgbCache
+  rgbCache = {
+    cyan: toRgb(colors.teal),
+    blue: toRgb(colors.blue),
+    green: toRgb(colors.green),
+    amber: toRgb(colors.accent),
+    red: toRgb(colors.red),
+    purple: toRgb(colors.purple),
+  }
+  rgbKey = key
+  return rgbCache
 }
 
-export const OUTCOME_RGB = {
-  completed: RGB.green,
-  retried: RGB.purple,
-  failed: RGB.red,
-  dropped: RGB.amber,
+function paletteColor(_target, key) {
+  if (typeof key !== 'string') return undefined
+  const rgb = currentRgb()
+  const outcome = {
+    cyan: rgb.cyan,
+    blue: rgb.blue,
+    green: rgb.green,
+    amber: rgb.amber,
+    red: rgb.red,
+    purple: rgb.purple,
+    completed: rgb.green,
+    retried: rgb.purple,
+    failed: rgb.red,
+    dropped: rgb.amber,
+  }
+  return outcome[key]
 }
+
+export const RGB = new Proxy({}, { get: paletteColor })
+export const OUTCOME_RGB = new Proxy({}, { get: paletteColor })
 
 /**
  * Stream colour for one connection, from what actually travelled it:

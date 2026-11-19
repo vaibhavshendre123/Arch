@@ -82,13 +82,13 @@ const FALLBACK_ICON = Network
 // vocabulary (see sim/flowRender.js ACTIVITY_EFFECT); nothing here fires for an
 // activity the engine never recorded.
 const EFFECT_STYLE = {
-  entry: { rgb: RGB.blue, dur: 430 },
-  burst: { rgb: RGB.cyan, dur: 540 },
-  out: { rgb: RGB.green, dur: 470 },
-  ok: { rgb: RGB.green, dur: 650 },
-  fail: { rgb: RGB.red, dur: 520 },
-  drop: { rgb: RGB.amber, dur: 740 },
-  retry: { rgb: RGB.purple, dur: 570 },
+  entry: { get rgb() { return RGB.blue }, dur: 430 },
+  burst: { get rgb() { return RGB.cyan }, dur: 540 },
+  out: { get rgb() { return RGB.green }, dur: 470 },
+  ok: { get rgb() { return RGB.green }, dur: 650 },
+  fail: { get rgb() { return RGB.red }, dur: 520 },
+  drop: { get rgb() { return RGB.amber }, dur: 740 },
+  retry: { get rgb() { return RGB.purple }, dur: 570 },
 }
 
 export function cardOf(node) {

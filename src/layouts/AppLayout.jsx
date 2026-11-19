@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { FolderKanban, Menu, X } from 'lucide-react'
+import { FolderKanban, Menu, Moon, Sun, X } from 'lucide-react'
 import { useApp } from '../store/AppContext.jsx'
+import { useTheme } from '../theme/ThemeProvider.jsx'
 import { resultKey } from '../store/useResults.js'
 import { colors, scoreColor } from '../theme/tokens.js'
 import { ToastHost } from '../components/ui.jsx'
@@ -18,7 +19,7 @@ function Sidebar({ open, onClose, health }) {
       } fixed z-30 w-[230px] lg:static lg:z-auto`}
     >
       <div className="flex items-center gap-2.5 border-b border-line-soft px-4 py-5">
-        <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[7px] bg-gradient-to-br from-accent to-[#c98a2e] font-mono text-[15px] font-bold text-[#1a1206]">
+        <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[7px] bg-gradient-to-br from-accent to-[#c98a2e] font-mono text-[15px] font-bold text-on-accent">
           A
         </div>
         <div className="min-w-0">
@@ -82,7 +83,7 @@ function Sidebar({ open, onClose, health }) {
   )
 }
 
-function Topbar({ onMenu }) {
+function Topbar({ onMenu, theme, toggleTheme }) {
   const { currentProject, user, demoMode } = useApp()
   return (
     <header className="no-print sticky top-0 z-20 flex h-[58px] shrink-0 items-center gap-4 border-b border-line-soft bg-base/85 px-5 backdrop-blur">
@@ -110,9 +111,18 @@ function Topbar({ onMenu }) {
             Demo mode
           </span>
         )}
+        <button
+          type="button"
+          onClick={toggleTheme}
+          className="cursor-pointer text-ink-dim transition hover:text-ink"
+          aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+          title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+        >
+          {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
+        </button>
         <NotificationBell />
         <div
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-teal to-blue font-mono text-[12px] font-bold text-[#04120e]"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-teal to-blue font-mono text-[12px] font-bold text-on-teal"
           title={user?.email}
         >
           {user?.initials || '—'}
@@ -128,6 +138,10 @@ function Topbar({ onMenu }) {
 
 export default function AppLayout() {
   const { simCache, workload, currentProject } = useApp()
+  // Consuming the theme here, rather than only inside the toggle button, is what repaints
+  // JS-computed colours in charts and inline styles: switching theme re-renders the whole
+  // layout subtree, so those values are recomputed from the new CSS tokens.
+  const { theme, toggleTheme } = useTheme()
   const [open, setOpen] = useState(false)
   const location = useLocation()
 
@@ -145,7 +159,7 @@ export default function AppLayout() {
         <div className="fixed inset-0 z-20 bg-black/60 lg:hidden" onClick={() => setOpen(false)} aria-hidden />
       )}
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar onMenu={() => setOpen(true)} />
+        <Topbar onMenu={() => setOpen(true)} theme={theme} toggleTheme={toggleTheme} />
         <main className="flex-1 px-5 py-6 pb-14 lg:px-7">
           <Outlet />
         </main>

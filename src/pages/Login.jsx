@@ -47,7 +47,7 @@ function Hero() {
       <div className="radial-fade pointer-events-none absolute inset-0 bg-gradient-to-t from-base via-base/75 to-base/20" />
 
       <div className="absolute inset-x-0 top-0 flex items-center gap-2.5 p-9">
-        <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[7px] bg-gradient-to-br from-accent to-accent/55 font-mono text-[15px] font-bold text-[#1a1206]">
+        <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[7px] bg-gradient-to-br from-accent to-accent/55 font-mono text-[15px] font-bold text-on-accent">
           A
         </div>
         <div className="font-mono text-[15px] font-bold tracking-tight">Arch-AI</div>
@@ -139,7 +139,7 @@ export default function Login({ mode = 'login' }) {
       <div className="flex min-h-screen items-center justify-center px-5 py-12">
         <div className="w-full max-w-[380px]">
           <div className="mb-7 flex items-center gap-2.5">
-            <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[7px] bg-gradient-to-br from-accent to-accent/55 font-mono text-[15px] font-bold text-[#1a1206]">
+            <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[7px] bg-gradient-to-br from-accent to-accent/55 font-mono text-[15px] font-bold text-on-accent">
               A
             </div>
             <div className="min-w-0">

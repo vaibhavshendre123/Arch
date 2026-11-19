@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Database, LogOut, Mail, Moon, RotateCcw, ShieldAlert, ShieldCheck, User } from 'lucide-react'
+import { Database, LogOut, Mail, Moon, RotateCcw, ShieldAlert, ShieldCheck, Sun, User } from 'lucide-react'
 import {
   Badge,
   Button,
@@ -11,12 +11,14 @@ import {
   inputClass,
 } from '../components/ui.jsx'
 import { useApp, useDispatch } from '../store/AppContext.jsx'
+import { useTheme } from '../theme/ThemeProvider.jsx'
 import { defaultSettings } from '../store/reducer.js'
 import { clearUserState, userStorageKey } from '../store/storage.js'
 import { logout, saveReportProfile } from '../services/auth.js'
 
 export default function Settings() {
   const { user, settings, workload, notify } = useApp()
+  const { theme, setTheme } = useTheme()
   const dispatch = useDispatch()
   const navigate = useNavigate()
 
@@ -208,19 +210,43 @@ export default function Settings() {
             format={(v) => `${v} req/s`}
           />
 
-          <Field label="Theme">
-            <select className={inputClass} defaultValue="blueprint" aria-label="Theme">
-              <option value="blueprint">Blueprint Dark</option>
-              <option value="light" disabled>
-                Light — coming soon
-              </option>
-            </select>
+          <Field
+            label="Theme"
+            hint="Applies instantly across the whole app and is remembered on this browser."
+          >
+            <div className="grid grid-cols-2 gap-2" role="group" aria-label="Theme">
+              {[
+                { value: 'dark', label: 'Blueprint Dark', icon: Moon },
+                { value: 'light', label: 'Light', icon: Sun },
+              ].map(({ value, label, icon: Icon }) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={theme === value}
+                  onClick={() => setTheme(value)}
+                  className={`flex items-center justify-center gap-2 rounded-[7px] border px-3 py-2 text-[12.5px] font-medium transition ${
+                    theme === value
+                      ? 'border-accent bg-accent/10 text-accent'
+                      : 'border-line bg-raised text-ink-dim hover:border-ink-faint hover:text-ink'
+                  }`}
+                >
+                  <Icon size={14} />
+                  {label}
+                </button>
+              ))}
+            </div>
           </Field>
 
           <div className="flex items-center gap-2 rounded-[8px] border border-line-soft bg-raised px-3 py-2.5">
-            <Moon size={14} className="shrink-0 text-ink-faint" />
+            {theme === 'dark' ? (
+              <Moon size={14} className="shrink-0 text-ink-faint" />
+            ) : (
+              <Sun size={14} className="shrink-0 text-accent" />
+            )}
             <span className="text-[12.5px] text-ink-dim">
-              Only the blueprint theme ships in this prototype. A light theme is stubbed above.
+              {theme === 'dark'
+                ? 'Blueprint Dark is active — the original dark working view.'
+                : 'Light is active — lighter surfaces, the same accent palette.'}
             </span>
           </div>
         </Card>

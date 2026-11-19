@@ -17,6 +17,10 @@
   --color-blue: #7da6ff;
   --color-red: #ff6b6b;
   --color-green: #7ee787;
+  /* Text painted on top of an accent/teal fill. Dark in the blueprint theme, light once
+     those fills are darkened for the light theme. */
+  --color-on-accent: #1a1206;
+  --color-on-teal: #04120e;
 
   --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
@@ -64,7 +68,7 @@
 
   ::selection {
     background: var(--color-accent);
-    color: #1a1206;
+    color: var(--color-on-accent);
   }
 
   * {
@@ -92,6 +96,36 @@
   button {
     font-family: inherit;
   }
+}
+
+/* Light theme.
+   Tailwind utilities reference the custom properties declared in `@theme`, so re-declaring
+   them on the root element repaints every background, text and border utility at once. The
+   selector is more specific than `:root` and lives outside `@layer`, so it reliably wins. JS
+   consumers read the same computed values through src/theme/tokens.js. */
+html[data-theme='light'] {
+  color-scheme: light;
+
+  --color-base: #f4f6f9;
+  --color-base-alt: #eaeef4;
+  --color-surface: #ffffff;
+  --color-raised: #f7f9fc;
+  --color-overlay: #eef1f6;
+  --color-line: #ccd4e0;
+  --color-line-soft: #e2e7ef;
+  --color-ink: #17212e;
+  --color-ink-dim: #4b5868;
+  --color-ink-faint: #6f7c8c;
+  /* Accents are darkened so text-accent stays legible on light surfaces; on-accent flips
+     so primary buttons and badges keep contrasting text. */
+  --color-accent: #9a5a00;
+  --color-teal: #0d8271;
+  --color-purple: #7943ad;
+  --color-blue: #2b5cc4;
+  --color-red: #c23b46;
+  --color-green: #188148;
+  --color-on-accent: #ffffff;
+  --color-on-teal: #ffffff;
 }
 
 /* Both grid classes now declare their own background. Previously they set only
@@ -141,6 +175,11 @@
   inset: 0;
   pointer-events: none;
   background: radial-gradient(140% 100% at 50% 50%, transparent 58%, rgba(5, 8, 12, 0.5) 100%);
+}
+
+/* The dark vignette would muddy a light canvas, so light mode uses a faint cool shade. */
+html[data-theme='light'] .control-room::after {
+  background: radial-gradient(140% 100% at 50% 50%, transparent 58%, rgba(23, 33, 46, 0.07) 100%);
 }
 
 /* Corner ticks for the command bar, drawn with borders so no extra DOM is needed. */

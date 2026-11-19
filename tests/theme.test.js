@@ -4,6 +4,7 @@ import { describe, it } from 'node:test'
 
 const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 const css = read('src/index.css')
+const html = read('index.html')
 
 function rule(selector) {
   const start = css.indexOf(selector)
@@ -69,5 +70,35 @@ describe('the theme is defined once', () => {
       assert.match(theme, new RegExp(`--color-${token}:`), `--color-${token} must be declared`)
     }
     assert.doesNotMatch(theme, /--color-base:\s*#fff/i, 'the base token must stay dark')
+  })
+})
+
+describe('the light theme', () => {
+  it('overrides the same palette tokens on the root element', () => {
+    const start = css.indexOf("html[data-theme='light']")
+    assert.ok(start > -1, 'a light-theme block must exist in index.css')
+    const light = css.slice(start, css.indexOf('}', start) + 1)
+    for (const token of ['base', 'base-alt', 'surface', 'raised', 'line', 'ink', 'accent', 'on-accent']) {
+      assert.match(light, new RegExp(`--color-${token}:`), `--color-${token} must be redefined for light`)
+    }
+  })
+
+  it('keeps text on accent fills readable in both themes', () => {
+    const theme = css.slice(css.indexOf('@theme'), css.indexOf('@layer base'))
+    assert.match(theme, /--color-on-accent:/)
+    assert.doesNotMatch(css, /text-\[#1a1206\]/, 'buttons must use the theme-aware on-accent token')
+  })
+
+  it('applies the saved theme before the first paint', () => {
+    const head = html.slice(html.indexOf('<head>'), html.indexOf('</head>'))
+    assert.match(head, /archai\.theme/, 'the boot script must read the same key as ThemeProvider')
+    assert.match(head, /document\.documentElement\.dataset\.theme\s*=/)
+  })
+
+  it('exposes a real light option in settings', () => {
+    const settings = read('src/pages/Settings.jsx')
+    assert.doesNotMatch(settings, /coming soon/)
+    assert.match(settings, /label: 'Light'/)
+    assert.match(settings, /onClick=\{\(\) => setTheme\(value\)\}/)
   })
 })

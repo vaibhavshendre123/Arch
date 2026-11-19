@@ -21,7 +21,7 @@ import {
 } from '../components/ui.jsx'
 
 const linkBtn =
-  'inline-flex items-center gap-2 rounded-[7px] border border-accent bg-accent px-3.5 py-2 text-[13px] font-semibold text-[#1a1206] transition hover:brightness-110'
+  'inline-flex items-center gap-2 rounded-[7px] border border-accent bg-accent px-3.5 py-2 text-[13px] font-semibold text-on-accent transition hover:brightness-110'
 
 function toPct(value) {
   const v = Number(value)

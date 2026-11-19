@@ -27,7 +27,7 @@ export function Card({ title, sub, actions, children, className = '', bodyClass 
 
 const buttonVariants = {
   default: 'border-line bg-raised text-ink hover:border-ink-faint',
-  primary: 'border-accent bg-accent text-[#1a1206] hover:brightness-110',
+  primary: 'border-accent bg-accent text-on-accent hover:brightness-110',
   danger: 'border-red bg-transparent text-red hover:bg-red/10',
   ghost: 'border-transparent bg-transparent text-ink-dim hover:bg-raised hover:text-ink',
 }

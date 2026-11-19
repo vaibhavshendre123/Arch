@@ -30,7 +30,7 @@ function botMessage(question) {
 
 function bubbleClass(role) {
   if (role === 'user')
-    return 'ml-auto flex max-w-[85%] flex-col rounded-[10px] rounded-br-[3px] bg-accent px-3.5 py-2.5 text-[13.5px] text-[#1a1206]'
+    return 'ml-auto flex max-w-[85%] flex-col rounded-[10px] rounded-br-[3px] bg-accent px-3.5 py-2.5 text-[13.5px] text-on-accent'
   if (role === 'feedback')
     return 'flex max-w-[92%] flex-col rounded-[10px] rounded-bl-[3px] border border-green/40 bg-green/10 px-3.5 py-2.5 text-[13px] text-ink'
   return 'flex max-w-[92%] flex-col rounded-[10px] rounded-bl-[3px] border border-line bg-raised px-3.5 py-2.5 text-[13.5px] text-ink'

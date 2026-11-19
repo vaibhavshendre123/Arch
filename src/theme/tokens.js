@@ -1,4 +1,6 @@
-export const colors = {
+// Dark values double as the fallback for non-browser consumers (Node tests, SSR): the
+// browser reads the live values from the CSS custom properties in index.css instead.
+const darkTokens = {
   base: '#0A0E14',
   baseAlt: '#0D1219',
   surface: '#10161F',
@@ -17,6 +19,51 @@ export const colors = {
   green: '#7EE787',
 }
 
+const cssVars = {
+  base: '--color-base',
+  baseAlt: '--color-base-alt',
+  surface: '--color-surface',
+  raised: '--color-raised',
+  overlay: '--color-overlay',
+  line: '--color-line',
+  lineSoft: '--color-line-soft',
+  ink: '--color-ink',
+  inkDim: '--color-ink-dim',
+  inkFaint: '--color-ink-faint',
+  accent: '--color-accent',
+  teal: '--color-teal',
+  purple: '--color-purple',
+  blue: '--color-blue',
+  red: '--color-red',
+  green: '--color-green',
+}
+
+let tokenCache = null
+let tokenTheme = null
+
+function readTokens() {
+  if (typeof document === 'undefined' || typeof getComputedStyle === 'undefined') return darkTokens
+  const theme = document.documentElement.dataset.theme || 'dark'
+  if (tokenCache && tokenTheme === theme) return tokenCache
+  const style = getComputedStyle(document.documentElement)
+  const next = {}
+  for (const [key, cssVar] of Object.entries(cssVars)) {
+    next[key] = style.getPropertyValue(cssVar).trim() || darkTokens[key]
+  }
+  tokenCache = next
+  tokenTheme = theme
+  return next
+}
+
+// Charts, canvases and inline styles read `colors.*` at render time. A proxy keeps every
+// consumer theme-aware without requiring each one to know a theme switch happened.
+export const colors = new Proxy({}, {
+  get(_target, key) {
+    if (typeof key !== 'string') return undefined
+    return readTokens()[key]
+  },
+})
+
 export const fonts = {
   sans: "'IBM Plex Sans', system-ui, sans-serif",
   mono: "'IBM Plex Mono', ui-monospace, monospace",
@@ -24,12 +71,14 @@ export const fonts = {
 
 export const gridSizes = { shell: 28, canvas: 22 }
 
+// Getters rather than captured values: these objects are imported once, long before the
+// user flips the theme, so plain properties would freeze the dark palette forever.
 export const categoryColor = {
-  client: colors.teal,
-  application: colors.accent,
-  data: colors.purple,
-  infrastructure: colors.blue,
-  security: colors.red,
+  get client() { return colors.teal },
+  get application() { return colors.accent },
+  get data() { return colors.purple },
+  get infrastructure() { return colors.blue },
+  get security() { return colors.red },
 }
 
 export function withAlpha(hex, alpha) {
@@ -92,9 +141,9 @@ export const dimensionOrder = [
 ]
 
 export const chartAxis = {
-  tick: { fill: colors.inkFaint, fontSize: 10, fontFamily: fonts.mono },
-  axisLine: { stroke: colors.line },
-  grid: { stroke: colors.lineSoft },
+  get tick() { return { fill: colors.inkFaint, fontSize: 10, fontFamily: fonts.mono } },
+  get axisLine() { return { stroke: colors.line } },
+  get grid() { return { stroke: colors.lineSoft } },
 }
 
 export const tierOrder = ['client', 'security', 'application', 'infrastructure', 'data']

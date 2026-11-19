@@ -19,6 +19,7 @@ so a design can be validated *before* any code is written.
 | AI recommendations | Server → Gemini | two arms: deterministic rules + a server-side Gemini call. The key never reaches the browser |
 | Report profile | Server → MongoDB Atlas | display name and affiliation, separate from the login email |
 | Interview scoring | Browser | **keyword matching** against a 15-question bank |
+| Themes | Browser | Blueprint Dark and Light; switch in Settings or the topbar, remembered per browser |
 
 A full run is held in an in-memory cache keyed by architecture hash and workload. Because
 that holds the event log it is **not** persisted, so the full result does not survive a
