@@ -32,6 +32,24 @@ function toCount(value, fallback, max = 100000) {
   return Number.isInteger(parsed) && parsed > 0 && parsed <= max ? parsed : fallback
 }
 
+/**
+ * Accept both the bare model id used by the REST path and the `models/...` resource name
+ * shown in AI Studio. Passing the resource name through encodeURIComponent produced
+ * `models/models%2F...`, which Google rejects with INVALID_ARGUMENT.
+ */
+export function normaliseGeminiModel(value, fallback = 'gemini-3.6-flash') {
+  let model = String(value ?? '').trim()
+  if (!model) return fallback
+  try {
+    model = decodeURIComponent(model)
+  } catch {
+    // A literal '%' is still a usable model id; leave it untouched.
+  }
+  if (model.startsWith('models/')) model = model.slice('models/'.length)
+  model = model.trim()
+  return model || fallback
+}
+
 function toList(value) {
   if (!value) return []
   return value
@@ -94,7 +112,7 @@ export const env = Object.freeze({
   // Read only from the backend environment. Anything prefixed VITE_ is compiled into
   // the public browser bundle, so the key must never live there.
   geminiApiKey: (process.env.GEMINI_API_KEY || '').trim(),
-  geminiModel: (process.env.GEMINI_MODEL || 'gemini-3.6-flash').trim(),
+  geminiModel: normaliseGeminiModel(process.env.GEMINI_MODEL, 'gemini-3.6-flash'),
   // A reasoning model can spend well over 20 s on a cold call, and the free tier answers
   // 503 under demand, so this budget has to cover retries as well as a single attempt.
   geminiTimeoutMs: toDuration(process.env.GEMINI_TIMEOUT_MS, 90000),

@@ -1,5 +1,9 @@
 import { Router } from 'express'
-import { advisorStatusHandler, generateAdvisorHandler } from '../controllers/recommendation.controller.js'
+import {
+  advisorChatHandler,
+  advisorStatusHandler,
+  generateAdvisorHandler,
+} from '../controllers/recommendation.controller.js'
 import { requireAuth } from '../middleware/auth.js'
 
 const router = Router()
@@ -9,5 +13,7 @@ router.use(requireAuth)
 
 router.get('/advisor', advisorStatusHandler)
 router.post('/advisor', generateAdvisorHandler)
+// Additive route: the two existing /advisor endpoints above keep their contracts.
+router.post('/advisor/chat', advisorChatHandler)
 
 export default router

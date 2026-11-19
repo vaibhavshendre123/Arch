@@ -76,16 +76,28 @@ describe('the advisor retries only what retrying can fix', () => {
   })
 })
 
-describe('the advisor prompt is not slowed down by hidden reasoning', () => {
-  it('disables the thinking budget', () => {
-    // Measured 861 thought tokens before any answer on a single evidence set. The findings
-    // are restatements of the evidence in the prompt, so the reasoning bought nothing and
-    // was the main reason the call ran past the old 20 s ceiling.
+describe('the advisor prompt sends a verified Gemini 3 generation config', () => {
+  it('keeps zero thinking for the configured model', () => {
+    // Verified with a live generateContent call: thinkingBudget 0 returns structured JSON
+    // immediately, while thinkingLevel variants made the same real payload time out.
     assert.match(service, /thinkingConfig: \{ thinkingBudget: 0 \}/)
   })
 
   it('keeps enough output budget for six written findings', () => {
     assert.match(service, /maxOutputTokens: 8192/)
+  })
+
+  it('normalises a full models/... resource name before building the endpoint', () => {
+    assert.match(config, /export function normaliseGeminiModel/)
+    assert.match(config, /model\.startsWith\('models\/'\)/)
+    assert.match(service, /encodeURIComponent\(\s*modelId,\s*\)/)
+  })
+
+  it('logs failures without the prompt, key or evidence', () => {
+    assert.match(service, /console\.error\('\[Gemini\] request failed'/)
+    assert.ok(service.includes('AIza[0-9A-Za-z_-]'))
+    assert.match(service, /promptBytes: promptText \? Buffer\.byteLength\(promptText\) : 0/)
+    assert.doesNotMatch(service, /console\.(log|error)\([^)]*requestBody[^)]*\)/)
   })
 })
 
@@ -104,7 +116,9 @@ describe('failure messages name the real cause', () => {
     // The free tier enforces both a per-minute and a per-day cap; only the provider knows
     // which one was hit.
     assert.match(service, /function readQuotaRetryHint/)
-    assert.match(service, /retry in\\s\+\(\[\\dhms\.\]\+\)/)
+    assert.match(service, /function formatRetryWindow/)
+    assert.match(service, /The provider says to retry in \$\{formatRetryWindow\(match\[1\]\)\}\./)
+    assert.doesNotMatch(service, /\[\\dhms\.\]\+/)
     assert.match(service, /used up its free-tier quota for \$\{env\.geminiModel\}/)
   })
 })

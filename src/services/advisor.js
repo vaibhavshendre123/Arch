@@ -20,3 +20,12 @@ export async function requestGeminiRecommendations(evidence) {
   const { data } = await api.post('/recommendations/advisor', { evidence })
   return data.data
 }
+
+/**
+ * Conversational follow-up over the same evidence. This is a separate route so the
+ * existing /advisor request/response contract used by the comparison arm stays unchanged.
+ */
+export async function askAdvisorQuestion({ question, history = [], evidence }) {
+  const { data } = await api.post('/recommendations/advisor/chat', { question, history, evidence })
+  return data.data
+}

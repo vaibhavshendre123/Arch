@@ -1,19 +1,26 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
+  Activity,
   AlertTriangle,
   Award,
   ChevronDown,
   ChevronRight,
+  Clock3,
+  Download,
+  Filter,
   GitBranch,
   History,
   Info,
   Lightbulb,
   ListTree,
+  Network,
   Route,
   ScrollText,
+  Search,
   Timer,
   TrendingUp,
+  X,
 } from 'lucide-react'
 import { useApp } from '../store/AppContext.jsx'
 import { useResults } from '../store/useResults.js'
@@ -30,6 +37,13 @@ import {
   inputClass,
 } from '../components/ui.jsx'
 import { BottleneckChart, PathSupportChart } from '../components/charts.jsx'
+import {
+  EVENT_TYPE_CATALOG,
+  EVENT_LOG_COLUMNS,
+  buildDetailedEventLog,
+  reconstructCaseTrace,
+  eventsToCsv,
+} from '../lib/eventLog.js'
 
 const ARROW = ' → '
 
@@ -152,7 +166,9 @@ function DeviationRow({ deviation, totalCases, onInspectCase }) {
 }
 
 function TraceTimeline({ caseId, events, outcome, path }) {
-  const rows = (events || []).filter((e) => String(e.caseId) === String(caseId))
+  const rows = (events || [])
+    .filter((e) => String(e.caseId) === String(caseId))
+    .sort((a, b) => (a.timestampMs ?? a.timestamp ?? 0) - (b.timestampMs ?? b.timestamp ?? 0))
   return (
     <div>
       <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -166,24 +182,28 @@ function TraceTimeline({ caseId, events, outcome, path }) {
       </div>
       {rows.length ? (
         <ol className="space-y-1">
-          {rows.map((e, i) => (
-            <li key={`${e.eventId ?? i}`} className="flex items-baseline gap-3 font-mono text-[11.5px]">
-              <span className="w-20 shrink-0 text-right text-ink-faint">{Number(e.timestamp).toFixed(1)} ms</span>
-              <span
-                className={`w-40 shrink-0 ${
-                  e.activity === 'FAILURE' || e.activity === 'REQUEST_DROPPED'
-                    ? 'text-red'
-                    : e.activity === 'REQUEST_COMPLETE'
-                      ? 'text-green'
-                      : 'text-accent'
-                }`}
-              >
-                {e.activity}
-              </span>
-              <span className="min-w-0 truncate text-ink-dim">{e.componentName || '—'}</span>
-              {e.status ? <span className="shrink-0 text-ink-faint">{e.status}</span> : null}
-            </li>
-          ))}
+          {rows.map((e, i) => {
+            const status = e.executionStatus || e.status
+            const failed = e.executionStatus === 'Failed' || status === 'failure' || status === 'aborted'
+            const dropped = e.executionStatus === 'Dropped' || status === 'dropped'
+            const done = e.executionStatus === 'Completed' || e.activity === 'REQUEST_COMPLETE'
+            const duration = e.processingDurationMs ?? e.waitingDurationMs
+            return (
+              <li key={`${e.id ?? e.eventId ?? i}`} className="flex items-baseline gap-3 font-mono text-[11.5px]">
+                <span className="w-20 shrink-0 text-right text-ink-faint">
+                  {Number(e.timestampMs ?? e.timestamp ?? 0).toFixed(1)} ms
+                </span>
+                <span className={`w-40 shrink-0 ${failed || dropped ? 'text-red' : done ? 'text-green' : 'text-accent'}`}>
+                  {e.activityLabel || e.activity}
+                </span>
+                <span className="min-w-0 truncate text-ink-dim">{e.componentName || '—'}</span>
+                {Number.isFinite(duration) ? (
+                  <span className="shrink-0 text-ink-faint">{Number(duration).toFixed(1)} ms</span>
+                ) : null}
+                {status ? <span className="shrink-0 text-ink-faint">{status}</span> : null}
+              </li>
+            )
+          })}
         </ol>
       ) : (
         <div className="py-3 text-center text-[12px] text-ink-faint">No events recorded for this case in the sample.</div>
@@ -191,6 +211,616 @@ function TraceTimeline({ caseId, events, outcome, path }) {
     </div>
   )
 }
+
+const TYPE_LABELS = Object.fromEntries(EVENT_TYPE_CATALOG.map((t) => [t.key, t.label]))
+
+// A null value is shown as an em dash, never as 0 — missing data and a measured zero are different.
+function DetailValue({ value, unit = '' }) {
+  if (value === null || value === undefined || value === '') return <span className="text-ink-faint">—</span>
+  return (
+    <span className="text-ink">
+      {value}
+      {unit}
+    </span>
+  )
+}
+
+function EventLogSection({ log }) {
+  const events = log?.events || []
+  const [query, setQuery] = useState('')
+  const [componentFilter, setComponentFilter] = useState('')
+  const [activityFilter, setActivityFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [typeFilter, setTypeFilter] = useState('')
+  const [fromMs, setFromMs] = useState('')
+  const [toMs, setToMs] = useState('')
+  const [sortKey, setSortKey] = useState('timestampMs')
+  const [sortDir, setSortDir] = useState('asc')
+  const [page, setPage] = useState(0)
+  const [expandedId, setExpandedId] = useState(null)
+  const [traceCase, setTraceCase] = useState(null)
+  const pageSize = 20
+
+  const options = useMemo(() => {
+    const uniq = (key) => [...new Set(events.map((e) => e[key]).filter((v) => v != null))].sort((a, b) =>
+      String(a).localeCompare(String(b)),
+    )
+    return {
+      components: uniq('componentName'),
+      activities: uniq('activityLabel'),
+      statuses: uniq('executionStatus'),
+      types: uniq('eventType'),
+      cases: uniq('caseId'),
+    }
+  }, [events])
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const from = fromMs === '' ? null : Number(fromMs)
+    const to = toMs === '' ? null : Number(toMs)
+    return events.filter((e) => {
+      if (q && !String(e.caseId).toLowerCase().includes(q) && !String(e.eventId).toLowerCase().includes(q)) return false
+      if (componentFilter && e.componentName !== componentFilter) return false
+      if (activityFilter && e.activityLabel !== activityFilter) return false
+      if (statusFilter && e.executionStatus !== statusFilter) return false
+      if (typeFilter && e.eventType !== typeFilter) return false
+      if (Number.isFinite(from) && !(e.timestampMs >= from)) return false
+      if (Number.isFinite(to) && !(e.timestampMs <= to)) return false
+      return true
+    })
+  }, [events, query, componentFilter, activityFilter, statusFilter, typeFilter, fromMs, toMs])
+
+  const sorted = useMemo(() => {
+    const dir = sortDir === 'asc' ? 1 : -1
+    return [...filtered].sort((a, b) => {
+      const av = a[sortKey]
+      const bv = b[sortKey]
+      if (av == null && bv == null) return 0
+      if (av == null) return 1
+      if (bv == null) return -1
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir
+      return String(av).localeCompare(String(bv)) * dir
+    })
+  }, [filtered, sortKey, sortDir])
+
+  const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize))
+  const currentPage = Math.min(page, pageCount - 1)
+  const visible = sorted.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
+  const activeFilters =
+    Boolean(query) || Boolean(componentFilter) || Boolean(activityFilter) || Boolean(statusFilter) || Boolean(typeFilter) || fromMs !== '' || toMs !== ''
+
+  const setSort = (key) => {
+    if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else {
+      setSortKey(key)
+      setSortDir(key === 'timestampMs' ? 'asc' : 'desc')
+    }
+    setPage(0)
+  }
+
+  const clearFilters = () => {
+    setQuery('')
+    setComponentFilter('')
+    setActivityFilter('')
+    setStatusFilter('')
+    setTypeFilter('')
+    setFromMs('')
+    setToMs('')
+    setPage(0)
+  }
+
+  const exportCsv = () => {
+    const csv = eventsToCsv(activeFilters ? sorted : events)
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `execution-event-log-${log?.runId || 'run'}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
+  const trace = traceCase ? reconstructCaseTrace(events, traceCase) : null
+  const analytic = log?.analytics || {}
+
+  return (
+    <Card
+      title="Execution Event Log"
+      sub="Every record comes from the simulation's real event stream, enriched with derived durations, statuses and run provenance. Unavailable fields are shown as —, never as zero."
+      actions={
+        <button
+          type="button"
+          onClick={exportCsv}
+          className="inline-flex items-center gap-2 rounded-[7px] border border-line bg-raised px-3 py-1.5 text-[12px] font-semibold text-ink transition hover:border-accent"
+        >
+          <Download size={13} />
+          Export CSV
+        </button>
+      }
+    >
+      <EventAnalytics analytics={analytic} unobserved={log?.unobservedEventTypes || []} />
+
+      <div className="my-5 border-t border-line-soft" />
+
+      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="relative">
+          <Search size={13} className="absolute left-2.5 top-2.5 text-ink-faint" />
+          <input
+            className={`${inputClass} pl-8`}
+            placeholder="Search case or event id…"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value)
+              setPage(0)
+            }}
+            aria-label="Search by case id or event id"
+          />
+        </div>
+        <select
+          className={inputClass}
+          value={componentFilter}
+          onChange={(e) => {
+            setComponentFilter(e.target.value)
+            setPage(0)
+          }}
+          aria-label="Filter by component"
+        >
+          <option value="">All components</option>
+          {options.components.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+        <select
+          className={inputClass}
+          value={activityFilter}
+          onChange={(e) => {
+            setActivityFilter(e.target.value)
+            setPage(0)
+          }}
+          aria-label="Filter by activity"
+        >
+          <option value="">All activities</option>
+          {options.activities.map((a) => (
+            <option key={a} value={a}>
+              {a}
+            </option>
+          ))}
+        </select>
+        <select
+          className={inputClass}
+          value={statusFilter}
+          onChange={(e) => {
+            setStatusFilter(e.target.value)
+            setPage(0)
+          }}
+          aria-label="Filter by execution status"
+        >
+          <option value="">All statuses</option>
+          {options.statuses.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+        <select
+          className={inputClass}
+          value={typeFilter}
+          onChange={(e) => {
+            setTypeFilter(e.target.value)
+            setPage(0)
+          }}
+          aria-label="Filter by event type"
+        >
+          <option value="">All event types</option>
+          {options.types.map((t) => (
+            <option key={t} value={t}>
+              {TYPE_LABELS[t] || t}
+            </option>
+          ))}
+        </select>
+        <div className="flex items-center gap-1.5">
+          <input
+            className={inputClass}
+            type="number"
+            placeholder="From ms"
+            value={fromMs}
+            onChange={(e) => {
+              setFromMs(e.target.value)
+              setPage(0)
+            }}
+            aria-label="Minimum timestamp in milliseconds"
+          />
+          <span className="text-ink-faint">–</span>
+          <input
+            className={inputClass}
+            type="number"
+            placeholder="To ms"
+            value={toMs}
+            onChange={(e) => {
+              setToMs(e.target.value)
+              setPage(0)
+            }}
+            aria-label="Maximum timestamp in milliseconds"
+          />
+        </div>
+        {activeFilters ? (
+          <button
+            type="button"
+            onClick={clearFilters}
+            className="inline-flex items-center justify-center gap-1.5 rounded-[7px] border border-line bg-raised px-3 py-2 text-[12px] text-ink-dim transition hover:border-accent hover:text-ink"
+          >
+            <X size={13} />
+            Clear filters
+          </button>
+        ) : null}
+      </div>
+
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11.5px] text-ink-faint">
+        <span className="flex items-center gap-1.5">
+          <Filter size={12} />
+          {sorted.length.toLocaleString()} of {events.length.toLocaleString()} events
+          {activeFilters ? ' (filtered)' : ''}
+        </span>
+        <span>
+          Simulation-relative timestamps in ms · sorted by{' '}
+          <button type="button" onClick={() => setSort('timestampMs')} className="cursor-pointer hover:text-accent">
+            timestamp {sortKey === 'timestampMs' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
+          </button>{' '}
+          /{' '}
+          <button type="button" onClick={() => setSort('processingDurationMs')} className="cursor-pointer hover:text-accent">
+            duration {sortKey === 'processingDurationMs' ? (sortDir === 'asc' ? '↑' : '↓') : ''}
+          </button>
+        </span>
+      </div>
+
+      <div className="overflow-x-auto rounded-[8px] border border-line">
+        <table className="w-full min-w-[820px] border-collapse text-left">
+          <thead>
+            <tr className="bg-raised font-mono text-[10.5px] tracking-wider text-ink-faint uppercase">
+              <th className="px-2.5 py-2">Event ID</th>
+              <th className="px-2.5 py-2">Case ID</th>
+              <th className="px-2.5 py-2">Activity</th>
+              <th className="px-2.5 py-2">Component</th>
+              <th className="px-2.5 py-2">Timestamp</th>
+              <th className="px-2.5 py-2">Duration</th>
+              <th className="px-2.5 py-2">Status</th>
+              <th className="px-2.5 py-2">Event Type</th>
+              <th className="px-2.5 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {visible.length ? (
+              visible.map((e) => {
+                const open = expandedId === e.id
+                const duration = e.processingDurationMs ?? e.waitingDurationMs
+                return (
+                  <EventRow
+                    key={e.id}
+                    event={e}
+                    open={open}
+                    duration={duration}
+                    typeLabel={TYPE_LABELS[e.eventType] || e.eventType}
+                    onToggle={() => setExpandedId(open ? null : e.id)}
+                    onTrace={() => setTraceCase(String(e.caseId))}
+                  />
+                )
+              })
+            ) : (
+              <tr>
+                <td colSpan={9} className="px-3 py-8 text-center text-[12.5px] text-ink-faint">
+                  No events match the current filters.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <span className="text-[11.5px] text-ink-faint">
+          Page {currentPage + 1} of {pageCount}
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={currentPage === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            className="rounded-[6px] border border-line bg-raised px-3 py-1.5 text-[12px] text-ink transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <button
+            type="button"
+            disabled={currentPage >= pageCount - 1}
+            onClick={() => setPage((p) => p + 1)}
+            className="rounded-[6px] border border-line bg-raised px-3 py-1.5 text-[12px] text-ink transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-5 border-t border-line-soft pt-5" id="event-trace-explorer">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Network size={15} className="text-accent" />
+            <span className="font-mono text-[13px] font-semibold text-ink">Case Trace Explorer</span>
+          </div>
+          <select
+            className={`${inputClass} max-w-72`}
+            value={traceCase ?? ''}
+            onChange={(e) => setTraceCase(e.target.value || null)}
+            aria-label="Select a case to view its complete trace"
+          >
+            <option value="">Choose a case…</option>
+            {options.cases.map((c) => (
+              <option key={c} value={c}>
+                case {c}
+              </option>
+            ))}
+          </select>
+        </div>
+        {trace ? (
+          <DetailedTrace trace={trace} />
+        ) : (
+          <div className="py-4 text-center text-[12.5px] text-ink-faint">
+            Choose a case to replay its complete chronological history, component transitions and error details.
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function EventRow({ event, open, duration, typeLabel, onToggle, onTrace }) {
+  const statusTone =
+    event.executionStatus === 'Failed' || event.executionStatus === 'Dropped'
+      ? 'red'
+      : event.executionStatus === 'Completed'
+        ? 'green'
+        : 'dim'
+  return (
+    <>
+      <tr className="border-t border-line-soft text-[12px] text-ink-dim hover:bg-raised/60">
+        <td className="px-2.5 py-2 font-mono text-[11px] text-ink-faint">{event.eventId}</td>
+        <td className="px-2.5 py-2 font-mono text-[11.5px] text-accent">{event.caseId}</td>
+        <td className="px-2.5 py-2">{event.activityLabel}</td>
+        <td className="px-2.5 py-2">{event.componentName || '—'}</td>
+        <td className="px-2.5 py-2 font-mono text-[11px] whitespace-nowrap">
+          {event.timestampMs == null ? '—' : `${Number(event.timestampMs).toFixed(1)} ms`}
+        </td>
+        <td className="px-2.5 py-2 font-mono text-[11px] whitespace-nowrap">
+          {Number.isFinite(duration) ? `${Number(duration).toFixed(1)} ms` : '—'}
+        </td>
+        <td className="px-2.5 py-2">
+          <Badge tone={statusTone}>{event.executionStatus || '—'}</Badge>
+        </td>
+        <td className="px-2.5 py-2">{typeLabel || '—'}</td>
+        <td className="px-2.5 py-2">
+          <button
+            type="button"
+            onClick={onToggle}
+            className="cursor-pointer rounded-[5px] border border-line-soft p-1 text-ink-faint transition hover:border-accent hover:text-accent"
+            aria-label={open ? 'Collapse event details' : 'Expand event details'}
+            aria-expanded={open}
+          >
+            {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          </button>
+        </td>
+      </tr>
+      {open ? (
+        <tr className="border-t border-line-soft bg-raised/60">
+          <td colSpan={9} className="px-3 py-3">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3 lg:grid-cols-4">
+              {EVENT_LOG_COLUMNS.map(([key, label]) => {
+                const value = event[key]
+                const isMs = key.endsWith('Ms') && value != null
+                return (
+                  <div key={key} className="min-w-0">
+                    <div className="font-mono text-[10px] tracking-wider text-ink-faint uppercase">{label}</div>
+                    <div className="truncate font-mono text-[11.5px]" title={value == null ? '' : String(value)}>
+                      <DetailValue value={isMs ? `${Number(value).toFixed(1)} ms` : value} />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-3 border-t border-line-soft pt-3">
+              <button
+                type="button"
+                onClick={onTrace}
+                className="inline-flex items-center gap-1.5 rounded-[6px] border border-accent px-2.5 py-1.5 text-[11.5px] font-semibold text-accent transition hover:brightness-110"
+              >
+                <Network size={12} />
+                View complete case trace
+              </button>
+              {event.failureReason ? (
+                <span className="text-[11.5px] text-red">Failure detail: {event.failureReason}</span>
+              ) : null}
+            </div>
+          </td>
+        </tr>
+      ) : null}
+    </>
+  )
+}
+
+function DetailedTrace({ trace }) {
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Badge tone="dim">case {trace.caseId}</Badge>
+        <span className="font-mono text-[11.5px] text-ink-dim">{trace.events.length} events</span>
+        <span className="font-mono text-[11px] text-ink-faint">run {trace.runId}</span>
+        {trace.architectureVersion ? (
+          <span className="font-mono text-[11px] text-ink-faint">arch {trace.architectureVersion}</span>
+        ) : null}
+      </div>
+
+      {trace.transitions.length ? (
+        <div className="mb-4">
+          <div className="mb-1.5 font-mono text-[10.5px] tracking-wider text-ink-faint uppercase">Component transitions</div>
+          <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11.5px] text-ink-dim">
+            {trace.transitions.map((t, i) => (
+              <span key={`${t.eventId}-${i}`} className="rounded-[5px] border border-line-soft bg-overlay px-2 py-1">
+                {t.from} {ARROW} {t.to}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <ol className="space-y-2">
+        {trace.events.map((e, i) => {
+          const failed = e.executionStatus === 'Failed' || e.executionStatus === 'Dropped'
+          return (
+            <li
+              key={`${e.id}-${i}`}
+              className="rounded-[7px] border border-line-soft bg-raised px-3 py-2.5"
+              style={{ borderLeft: `3px solid ${failed ? 'var(--color-red, #f87171)' : 'var(--color-accent, #38bdf8)'}` }}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-[11px] text-ink-faint">#{e.sequenceNumber}</span>
+                <span className={`font-mono text-[12px] ${failed ? 'text-red' : 'text-accent'}`}>{e.activityLabel}</span>
+                <Badge tone={e.executionStatus === 'Completed' ? 'green' : e.executionStatus === 'Dropped' || e.executionStatus === 'Failed' ? 'red' : 'dim'}>
+                  {e.executionStatus}
+                </Badge>
+                {e.eventType ? <span className="font-mono text-[10.5px] text-ink-faint">{TYPE_LABELS[e.eventType] || e.eventType}</span> : null}
+              </div>
+              <div className="mt-1.5 grid grid-cols-2 gap-x-5 gap-y-1 font-mono text-[11px] text-ink-dim sm:grid-cols-4">
+                <span>At <DetailValue value={e.timestampMs == null ? null : `${e.timestampMs.toFixed(1)} ms`} /></span>
+                <span>Start <DetailValue value={e.startTimeMs == null ? null : `${e.startTimeMs.toFixed(1)} ms`} /></span>
+                <span>Complete <DetailValue value={e.completionTimeMs == null ? null : `${e.completionTimeMs.toFixed(1)} ms`} /></span>
+                <span>Process <DetailValue value={e.processingDurationMs == null ? null : `${e.processingDurationMs.toFixed(1)} ms`} /></span>
+                <span>Wait <DetailValue value={e.waitingDurationMs == null ? null : `${e.waitingDurationMs.toFixed(1)} ms`} /></span>
+                <span className="col-span-2">Component <DetailValue value={e.componentName} /></span>
+                {e.sourceComponent ? (
+                  <span className="col-span-2">Transition {e.sourceComponent} {ARROW} {e.destinationComponent}</span>
+                ) : null}
+              </div>
+              {e.failureReason ? (
+                <div className="mt-1.5 text-[11.5px] text-red">Error: {e.failureReason}</div>
+              ) : null}
+            </li>
+          )
+        })}
+      </ol>
+    </div>
+  )
+}
+
+function EventAnalytics({ analytics, unobserved }) {
+  const statusBars = (analytics.statusDistribution || []).map((s) => ({
+    label: s.label,
+    count: s.count,
+    share: analytics.totalEvents ? (s.count / analytics.totalEvents) * 100 : 0,
+  }))
+  return (
+    <div>
+      <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="rounded-[8px] border border-line-soft bg-raised p-3">
+          <div className="font-mono text-[10px] tracking-wider text-ink-faint uppercase">Total events</div>
+          <div className="font-mono text-[17px] text-ink">{Number(analytics.totalEvents || 0).toLocaleString()}</div>
+        </div>
+        <div className="rounded-[8px] border border-line-soft bg-raised p-3">
+          <div className="font-mono text-[10px] tracking-wider text-ink-faint uppercase">Total cases</div>
+          <div className="font-mono text-[17px] text-ink">{Number(analytics.totalCases || 0).toLocaleString()}</div>
+        </div>
+        <div className="rounded-[8px] border border-line-soft bg-raised p-3">
+          <div className="font-mono text-[10px] tracking-wider text-ink-faint uppercase">Completed cases</div>
+          <div className="font-mono text-[17px] text-green">{Number(analytics.completedCases || 0).toLocaleString()}</div>
+        </div>
+        <div className="rounded-[8px] border border-line-soft bg-raised p-3">
+          <div className="font-mono text-[10px] tracking-wider text-ink-faint uppercase">Failed cases</div>
+          <div className="font-mono text-[17px] text-red">{Number(analytics.failedCases || 0).toLocaleString()}</div>
+        </div>
+        <div className="rounded-[8px] border border-line-soft bg-raised p-3">
+          <div className="font-mono text-[10px] tracking-wider text-ink-faint uppercase">Dropped cases</div>
+          <div className="font-mono text-[17px] text-red">{Number(analytics.droppedCases || 0).toLocaleString()}</div>
+        </div>
+        <div className="rounded-[8px] border border-line-soft bg-raised p-3">
+          <div className="font-mono text-[10px] tracking-wider text-ink-faint uppercase">Avg events / case</div>
+          <div className="font-mono text-[17px] text-ink">
+            {analytics.avgEventsPerCase == null ? '—' : Number(analytics.avgEventsPerCase).toFixed(1)}
+          </div>
+        </div>
+        <div className="rounded-[8px] border border-line-soft bg-raised p-3">
+          <div className="font-mono text-[10px] tracking-wider text-ink-faint uppercase">Avg processing</div>
+          <div className="font-mono text-[17px] text-ink">
+            {analytics.avgProcessingDurationMs == null ? '—' : `${Number(analytics.avgProcessingDurationMs).toFixed(1)} ms`}
+          </div>
+        </div>
+        <div className="rounded-[8px] border border-line-soft bg-raised p-3">
+          <div className="font-mono text-[10px] tracking-wider text-ink-faint uppercase">Avg waiting</div>
+          <div className="font-mono text-[17px] text-ink">
+            {analytics.avgWaitingDurationMs == null ? '—' : `${Number(analytics.avgWaitingDurationMs).toFixed(1)} ms`}
+          </div>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+        <div className="rounded-[8px] border border-line-soft bg-raised p-3">
+          <div className="mb-1.5 font-mono text-[10px] tracking-wider text-ink-faint uppercase">Most frequent activity</div>
+          <div className="text-[12.5px] text-ink">
+            <DetailValue value={analytics.mostFrequentActivity?.label} />
+            {analytics.mostFrequentActivity ? (
+              <span className="ml-1.5 font-mono text-[11px] text-ink-faint">× {analytics.mostFrequentActivity.count}</span>
+            ) : null}
+          </div>
+        </div>
+        <div className="rounded-[8px] border border-line-soft bg-raised p-3">
+          <div className="mb-1.5 font-mono text-[10px] tracking-wider text-ink-faint uppercase">Most time-consuming activity</div>
+          <div className="text-[12.5px] text-ink">
+            <DetailValue value={analytics.mostTimeConsumingActivity?.label} />
+            {analytics.mostTimeConsumingActivity ? (
+              <span className="ml-1.5 font-mono text-[11px] text-ink-faint">
+                {Number(analytics.mostTimeConsumingActivity.totalMs).toFixed(1)} ms
+              </span>
+            ) : null}
+          </div>
+        </div>
+        <div className="rounded-[8px] border border-line-soft bg-raised p-3">
+          <div className="mb-1.5 font-mono text-[10px] tracking-wider text-ink-faint uppercase">Failures by component</div>
+          {analytics.failureFrequencyByComponent?.length ? (
+            <div className="flex flex-wrap gap-1.5">
+              {analytics.failureFrequencyByComponent.slice(0, 6).map((f) => (
+                <span key={f.label} className="rounded-[5px] border border-line-soft bg-overlay px-2 py-0.5 font-mono text-[11px] text-ink-dim">
+                  {f.label}: {f.count}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span className="text-[12px] text-ink-faint">No component failures recorded.</span>
+          )}
+        </div>
+      </div>
+      <div className="mt-3 rounded-[8px] border border-line-soft bg-raised p-3">
+        <div className="mb-2 font-mono text-[10px] tracking-wider text-ink-faint uppercase">Event distribution by status</div>
+        {statusBars.length ? (
+          <div className="space-y-1.5">
+            {statusBars.map((s) => (
+              <UtilBar key={s.label} value={s.share} label={s.label} right={`${s.count.toLocaleString()} · ${s.share.toFixed(1)}%`} />
+            ))}
+          </div>
+        ) : (
+          <span className="text-[12px] text-ink-faint">No events recorded.</span>
+        )}
+      </div>
+      {unobserved.length ? (
+        <div className="mt-3 rounded-[7px] border border-line-soft bg-overlay px-3 py-2 text-[11.5px] text-ink-faint">
+          <Info size={12} className="mr-1 inline" />
+          Not emitted by the engine (never invented):{' '}
+          {unobserved.map((t) => t.label).join(', ')}. These remain unobserved rather than being recorded as zero or
+          fictional events.
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 
 export default function ProcessMining() {
   const { currentProject } = useApp()
@@ -201,6 +831,10 @@ export default function ProcessMining() {
 
   const caseSummaries = useMemo(() => mining?.caseSummaries || [], [mining])
   const summaryById = useMemo(() => new Map(caseSummaries.map((c) => [String(c.caseId), c])), [caseSummaries])
+  const detailedLog = useMemo(
+    () => buildDetailedEventLog({ sim, mining, architecture: currentProject?.arch, project: currentProject }),
+    [sim, mining, currentProject],
+  )
 
   const filteredCases = useMemo(() => {
     const q = caseQuery.trim().toLowerCase()
@@ -462,6 +1096,61 @@ export default function ProcessMining() {
         />
       </div>
 
+      <Card
+        className="mb-5"
+        title="Evidence chain"
+        sub="Each stage consumes only the output of the one before it. Provenance stamps bind the log to a single simulation run and architecture version."
+      >
+        <div className="flex flex-wrap items-stretch gap-2">
+          {[
+            { label: 'Architecture', detail: provenance?.archHash || 'validated graph', icon: <GitBranch size={14} /> },
+            {
+              label: 'Simulation',
+              detail: provenance?.seed != null ? `seed ${provenance.seed}` : 'discrete-event engine',
+              icon: <Activity size={14} />,
+            },
+            {
+              label: 'Event Log',
+              detail: `${detailedLog.events.length.toLocaleString()} real events`,
+              icon: <ScrollText size={14} />,
+            },
+            {
+              label: 'Process Discovery',
+              detail: `${allVariants.length} observed variants`,
+              icon: <ListTree size={14} />,
+            },
+            {
+              label: 'Conformance',
+              detail: conformanceValue == null ? 'not available' : `${conformanceValue.toFixed(1)}%`,
+              icon: <Route size={14} />,
+            },
+          ].map((stage, i, stages) => (
+            <div key={stage.label} className="flex items-stretch gap-2">
+              <div className="min-w-[130px] rounded-[8px] border border-line-soft bg-raised px-3 py-2.5">
+                <div className="flex items-center gap-1.5 text-accent">
+                  {stage.icon}
+                  <span className="font-mono text-[11.5px] font-semibold text-ink">{stage.label}</span>
+                </div>
+                <div className="mt-1 font-mono text-[10.5px] text-ink-faint">{stage.detail}</div>
+              </div>
+              {i < stages.length - 1 ? (
+                <span className="flex items-center font-mono text-[13px] text-ink-faint">{ARROW}</span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line-soft pt-3 font-mono text-[11px] text-ink-faint">
+          <span>run: <span className="text-ink-dim">{detailedLog.runId}</span></span>
+          <span>arch version: <span className="text-ink-dim">{detailedLog.architectureVersion || '—'}</span></span>
+          <span>events: <span className="text-ink-dim">{detailedLog.events.length.toLocaleString()}</span></span>
+          <span>cases: <span className="text-ink-dim">{detailedLog.cases.length.toLocaleString()}</span></span>
+        </div>
+      </Card>
+
+      <div className="mb-5">
+        <EventLogSection log={detailedLog} />
+      </div>
+
       {!available ? (
         <Card className="mb-5">
           <Empty
@@ -652,7 +1341,7 @@ export default function ProcessMining() {
           {selectedCaseId ? (
             <TraceTimeline
               caseId={selectedCaseId}
-              events={sim?.eventLog || []}
+              events={detailedLog.events.length ? detailedLog.events : sim?.eventLog || []}
               outcome={selectedSummary?.outcome}
               path={selectedSummary?.path}
             />
